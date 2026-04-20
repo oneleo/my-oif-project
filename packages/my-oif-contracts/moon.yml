@@ -1,0 +1,27 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+layer: "library"
+language: "solidity"
+# 新增 Foundry 依賴請於本目錄執行：forge install <github.com/org/repo>（需版控與 remappings）
+tasks:
+  build:
+    command: "forge build"
+    # 原始碼與設定變更時重新建置；outputs 供下游專案納入快取指紋
+    inputs:
+      - "src/**/*"
+      - "lib/**/*"
+      - "foundry.toml"
+    outputs:
+      # forge 預設編譯輸出目錄
+      - "out"
+  test:
+    command: "forge test"
+    inputs:
+      - "src/**/*"
+      - "test/**/*"
+      - "script/**/*"
+      - "lib/**/*"
+      - "foundry.toml"
+  clean:
+    command: "forge clean"
+    options:
+      cache: false # 僅本機清理產物，不納入遠端快取管線

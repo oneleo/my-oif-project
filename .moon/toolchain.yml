@@ -1,0 +1,22 @@
+$schema: "https://moonrepo.dev/schemas/toolchain.json"
+
+rust:
+  version: "1.95.0" # 根據 solver 的需求設定
+  syncToolchainConfig: true
+
+node:
+  # 與 mise.toml / Dev Container 中的 Node 版本對齊
+  version: "24.15.0"
+  packageManager: "npm"
+  # 偵測根目錄與子專案 package.json（及鎖檔）變更時，自動執行 npm install
+  syncProjectWorkspaceDependencies: true
+  # 子專案執行 Prettier 相關任務時，改以工作區解析到的 Prettier 為準（需根或套件內安裝 prettier）
+  enforcePrettierAlias: true
+
+typescript:
+  # 同步既有 tsconfig 的 project references；不會新建 tsconfig（見下方 createMissingConfig）
+  syncProjectReferences: true
+  # 不自動產生預設 tsconfig，以免覆寫 frontend 的 paths（例如 @contracts/*）
+  createMissingConfig: false
+  # 編譯產物導向 .moon/cache，與 Moon 快取一併管理
+  routeOutDirToCache: true

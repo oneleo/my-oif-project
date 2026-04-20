@@ -1,0 +1,9 @@
+[submodule "packages/my-oif-contracts/lib/forge-std"]
+	path = packages/my-oif-contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std.git
+[submodule "packages/my-oif-contracts/lib/oif-contracts"]
+	path = packages/my-oif-contracts/lib/oif-contracts
+	url = https://github.com/openintentsframework/oif-contracts.git
+[submodule "packages/my-oif-solver/lib/oif-solver"]
+	path = packages/my-oif-solver/lib/oif-solver
+	url = https://github.com/oneleo/oif-solver.git

@@ -1,0 +1,59 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+layer: "application"
+language: "rust"
+
+tasks:
+  build:
+    command: cargo
+    args:
+      - build
+      - --manifest-path
+      - lib/oif-solver/Cargo.toml
+      - --workspace
+    inputs:
+      - "lib/oif-solver/Cargo.toml"
+      - "lib/oif-solver/Cargo.lock"
+      - "lib/oif-solver/crates/**/*.rs"
+      - "lib/oif-solver/crates/**/Cargo.toml"
+    outputs:
+      - "lib/oif-solver/target"
+
+  test:
+    command: cargo
+    args:
+      - test
+      - --manifest-path
+      - lib/oif-solver/Cargo.toml
+      - --workspace
+    inputs:
+      - "lib/oif-solver/Cargo.toml"
+      - "lib/oif-solver/Cargo.lock"
+      - "lib/oif-solver/crates/**/*.rs"
+      - "lib/oif-solver/crates/**/Cargo.toml"
+
+  clippy:
+    command: cargo
+    args:
+      - clippy
+      - --manifest-path
+      - lib/oif-solver/Cargo.toml
+      - --workspace
+    inputs:
+      - "lib/oif-solver/Cargo.toml"
+      - "lib/oif-solver/Cargo.lock"
+      - "lib/oif-solver/crates/**/*.rs"
+      - "lib/oif-solver/crates/**/Cargo.toml"
+
+  fmt-check:
+    command: cargo
+    args:
+      - fmt
+      - --manifest-path
+      - lib/oif-solver/Cargo.toml
+      - --all
+      - --
+      - --check
+    inputs:
+      - "lib/oif-solver/Cargo.toml"
+      - "lib/oif-solver/rustfmt.toml"
+      - "lib/oif-solver/crates/**/*.rs"
