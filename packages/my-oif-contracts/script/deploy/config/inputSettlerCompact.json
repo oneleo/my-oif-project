@@ -1,0 +1,30 @@
+{
+  "1": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "eth-mainnet"
+  },
+  "130": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "unichain-mainnet"
+  },
+  "8453": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "base-mainnet"
+  },
+  "84532": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "base-sepolia"
+  },
+  "421614": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "arb-sepolia"
+  },
+  "11155111": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "eth-sepolia"
+  },
+  "11155420": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "opt-sepolia"
+  }
+}

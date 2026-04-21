@@ -1,20 +1,20 @@
 $schema: "https://moonrepo.dev/schemas/project.json"
 layer: "library"
 language: "solidity"
-# 新增 Foundry 依賴請於本目錄執行：forge install <github.com/org/repo>（需版控與 remappings）
+# To add dependencies, run: forge install <repo> (Requires version control & remappings update)
 tasks:
   build:
     command: "forge build"
-    # 原始碼與設定變更時重新建置；outputs 供下游專案納入快取指紋
+    # Rebuild on source/config changes; outputs are used for downstream cache hashing
     inputs:
       - "src/**/*"
       - "lib/**/*"
       - "foundry.toml"
     outputs:
-      # forge 預設編譯輸出目錄
-      - "out"
+      - "out" # Default forge build artifacts
   test:
     command: "forge test"
+    # Run tests if any core logic, tests, or scripts change
     inputs:
       - "src/**/*"
       - "test/**/*"
@@ -24,4 +24,54 @@ tasks:
   clean:
     command: "forge clean"
     options:
-      cache: false # 僅本機清理產物，不納入遠端快取管線
+      cache: false # Local cleanup only; excluded from remote pipeline cache
+
+  deploy-one-chain:
+    command: bash
+    args:
+      - script/deploy/universal/deploy-one-chain.sh
+    # Full dependency set required for deterministic deployment
+    inputs:
+      - "script/deploy/**/*.sh"
+      - "script/deploy/**/*.s.sol"
+      - "script/deploy/config/**/*.json"
+      - "script/deploy/addresses.json"
+      - "src/**/*"
+      - "lib/**/*"
+      - "foundry.toml"
+      - ".env.example"
+    options:
+      cache: false # Deployment actions are typically non-idempotent/volatile
+
+  dry-run:
+    command: bash
+    args:
+      - script/deploy/universal/dry-run.sh
+    inputs:
+      - "script/deploy/**/*.sh"
+      - "script/deploy/**/*.s.sol"
+      - "script/deploy/config/**/*.json"
+      - "src/**/*"
+      - "lib/**/*"
+      - "foundry.toml"
+      - ".env.example"
+    outputs:
+      - "script/deploy/addresses.dry-run.json"
+    options:
+      cache: false
+
+  verify-one-chain:
+    command: bash
+    args:
+      - script/deploy/universal/verify-one-chain.sh
+    # Ensure verification triggers only when contract metadata or configs match
+    inputs:
+      - "script/deploy/**/*.sh"
+      - "script/deploy/config/**/*.json"
+      - "script/deploy/addresses.json"
+      - "src/**/*"
+      - "lib/**/*"
+      - "foundry.toml"
+      - ".env.example"
+    options:
+      cache: false

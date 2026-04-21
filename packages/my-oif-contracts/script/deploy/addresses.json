@@ -1,0 +1,34 @@
+{
+  "84532": {
+    "chainLabel": "base-sepolia",
+    "inputSettlerEscrow": "0x8429Ba4323b2131aA7FB1947E20dB479030c12c1",
+    "inputSettlerCompact": "0xe855e254813B2A2B974F9d888a5F8F8bCEb62aD5",
+    "outputSettlerSimple": "0x07C262912467800B0AA9B2E1bd44DC8ceCfB90Eb",
+    "hyperlaneOracle": "0x58Ce84331d53268430586dB120c0463859fd02Fc",
+    "catsMulticallHandler": "0xE3a890f17B74ff8c270b66483d73D512Cc05FB9d"
+  },
+  "421614": {
+    "chainLabel": "arb-sepolia",
+    "inputSettlerEscrow": "0x8429Ba4323b2131aA7FB1947E20dB479030c12c1",
+    "inputSettlerCompact": "0xe855e254813B2A2B974F9d888a5F8F8bCEb62aD5",
+    "outputSettlerSimple": "0x07C262912467800B0AA9B2E1bd44DC8ceCfB90Eb",
+    "hyperlaneOracle": "0xBb7375342a3528Bc6d33d0D68A2725e139c1c121",
+    "catsMulticallHandler": "0xE3a890f17B74ff8c270b66483d73D512Cc05FB9d"
+  },
+  "11155111": {
+    "chainLabel": "eth-sepolia",
+    "inputSettlerEscrow": "0x8429Ba4323b2131aA7FB1947E20dB479030c12c1",
+    "inputSettlerCompact": "0xe855e254813B2A2B974F9d888a5F8F8bCEb62aD5",
+    "outputSettlerSimple": "0x07C262912467800B0AA9B2E1bd44DC8ceCfB90Eb",
+    "hyperlaneOracle": "0x0BeC172d10d76aa41c0c7bD14185cfeD25742f4A",
+    "catsMulticallHandler": "0xE3a890f17B74ff8c270b66483d73D512Cc05FB9d"
+  },
+  "11155420": {
+    "chainLabel": "opt-sepolia",
+    "inputSettlerEscrow": "0x8429Ba4323b2131aA7FB1947E20dB479030c12c1",
+    "inputSettlerCompact": "0xe855e254813B2A2B974F9d888a5F8F8bCEb62aD5",
+    "outputSettlerSimple": "0x07C262912467800B0AA9B2E1bd44DC8ceCfB90Eb",
+    "hyperlaneOracle": "0x58Ce84331d53268430586dB120c0463859fd02Fc",
+    "catsMulticallHandler": "0xE3a890f17B74ff8c270b66483d73D512Cc05FB9d"
+  }
+}
