@@ -3,6 +3,34 @@ layer: "application"
 language: "rust"
 
 tasks:
+  npm-install:
+    command: npm
+    args:
+      - ci
+    inputs:
+      - "package.json"
+      - "package-lock.json"
+
+  ts-check:
+    command: npx
+    args:
+      - tsc
+      - --noEmit
+    inputs:
+      - "tsconfig.json"
+      - "scripts/index.ts"
+      - "scripts/index.test.ts"
+      - "package.json"
+      - "package-lock.json"
+
+  script-health:
+    script: "set -a && source .env && set +a && npm run health"
+    inputs:
+      - ".env.example"
+      - "package.json"
+      - "scripts/index.ts"
+      - "scripts/index.test.ts"
+
   build:
     command: cargo
     args:
@@ -57,3 +85,22 @@ tasks:
       - "lib/oif-solver/Cargo.toml"
       - "lib/oif-solver/rustfmt.toml"
       - "lib/oif-solver/crates/**/*.rs"
+
+  bootstrap:
+    script: "bash scripts/run-solver.sh config/sepolia_base-sepolia.json --force-seed"
+    inputs:
+      - ".env.example"
+      - "config/sepolia_base-sepolia.json"
+      - "scripts/run-solver.sh"
+      - "scripts/run-bootstrap.sh"
+      - "scripts/render-config-env.sh"
+    preset: server
+
+  start:
+    script: "bash scripts/run-solver.sh config/sepolia_base-sepolia.json"
+    inputs:
+      - ".env.example"
+      - "config/sepolia_base-sepolia.json"
+      - "scripts/run-solver.sh"
+      - "scripts/run-bootstrap.sh"
+      - "scripts/render-config-env.sh"

@@ -1,0 +1,5 @@
+# Local secrets & env vars (copy from .env.example)
+.env
+
+node_modules/
+/.oif-orders/

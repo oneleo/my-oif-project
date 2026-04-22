@@ -1,16 +1,35 @@
 {
   "name": "my-oif-solver",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "directories": {
-    "lib": "lib"
-  },
+  "version": "0.0.0",
+  "private": true,
+  "description": "OIF solver (Rust) + TypeScript viem scripts for Sepolia / Base Sepolia",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "bootstrap": "bash scripts/run-solver.sh config/sepolia_base-sepolia.json --force-seed",
+    "render-config": "bash scripts/render-config-env.sh",
+    "start": "bash scripts/run-solver.sh config/sepolia_base-sepolia.json",
+    "assets": "tsx scripts/index.ts assets",
+    "health": "tsx scripts/index.ts health",
+    "quotes": "tsx scripts/index.ts quotes",
+    "approve-permit2": "tsx scripts/index.ts approve-permit2",
+    "approve-settler": "tsx scripts/index.ts approve-settler",
+    "doctor": "tsx scripts/index.ts doctor",
+    "open": "tsx scripts/index.ts open",
+    "quote-min": "tsx scripts/index.ts quote-min",
+    "refund": "tsx scripts/index.ts refund",
+    "status": "tsx scripts/index.ts status",
+    "openFor": "tsx scripts/index.ts openFor",
+    "test": "node --import tsx --test scripts/*.test.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs"
+  "dependencies": {
+    "@wonderland/interop-addresses": "^0.5.1",
+    "dotenv": "^17.4.2",
+    "dotenv-expand": "^12.0.3",
+    "viem": "^2.47.18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  }
 }
