@@ -169,8 +169,21 @@ const SOLVER_BASE_URL =
 function solverHttpOrigin(): string {
   return SOLVER_BASE_URL.replace(/\/api\/v1\/?$/, "");
 }
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? "5000");
+/** 初始輪詢間隔（ms）；可透過環境變數 POLL_INTERVAL_MS 覆寫 */
+const BASE_POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? "5000");
+/** 指數退避上限（ms）；可透過環境變數 MAX_POLL_INTERVAL_MS 覆寫 */
+const MAX_POLL_INTERVAL_MS = Number(
+  process.env.MAX_POLL_INTERVAL_MS ?? "30000",
+);
 const ORDER_TIMEOUT_MS = Number(process.env.ORDER_TIMEOUT_MS ?? "600000");
+/**
+ * OutputFilled 事件掃描回溯區塊數（預設 40000）。
+ * 可透過環境變數 OUTPUT_FILLED_SCAN_LOOKBACK_BLOCKS 覆寫。
+ * 當能從 open tx 估算目的鏈起始區塊時，此值作為最大回溯上限。
+ */
+const OUTPUT_FILLED_SCAN_LOOKBACK_BLOCKS = BigInt(
+  process.env.OUTPUT_FILLED_SCAN_LOOKBACK_BLOCKS ?? "40000",
+);
 const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as Address;
 const EIP712_DOMAIN_TYPEHASH = keccak256(
   stringValueToHex(
@@ -213,6 +226,27 @@ const INPUT_SETTLER_EVENTS_ABI = parseAbi([
 const HYPERLANE_MAILBOX_EVENTS_ABI = parseAbi([
   "event DispatchId(bytes32 indexed messageId)",
 ]);
+/**
+ * Full Dispatch event from Hyperlane Mailbox.
+ * The PostFill tx (submitted by the solver AFTER the fill) calls the output oracle,
+ * which internally calls Mailbox.dispatch() → emits this event.
+ * sender = output oracle on destination chain; messageId is in data (not indexed).
+ */
+const HYPERLANE_MAILBOX_DISPATCH_ABI = parseAbi([
+  "event Dispatch(address indexed sender, uint32 indexed destination, bytes32 indexed recipient, bytes32 messageId, bytes message)",
+])[0];
+const OUTPUT_SETTLER_FILL_ABI = parseAbi([
+  "event OutputFilled(bytes32 indexed orderId, bytes32 solver, uint32 timestamp, (bytes32 oracle, bytes32 settler, uint256 chainId, bytes32 token, uint256 amount, bytes32 recipient, bytes callbackData, bytes context) output, uint256 finalAmount)",
+]);
+/**
+ * Keccak256 of the canonical OutputFilled event signature.
+ * Used to scan receipt logs without a full getLogs call.
+ */
+const OUTPUT_FILLED_TOPIC0 = keccak256(
+  stringValueToHex(
+    "OutputFilled(bytes32,bytes32,uint32,(bytes32,bytes32,uint256,bytes32,uint256,bytes32,bytes,bytes),uint256)",
+  ),
+) as Hex;
 
 const CHAIN_CONFIG: Record<
   ChainKey,
@@ -269,6 +303,23 @@ const HYPERLANE_MAILBOX_MAP: Record<number, Address> = {
   11155111: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
   84532: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
 };
+/**
+ * Output oracle addresses on each destination chain.
+ * The PostFill tx calls the output oracle, which dispatches to Hyperlane.
+ * Used to filter Dispatch events by sender in findMailboxDispatchIdAfterFill.
+ */
+const OUTPUT_ORACLE_MAP: Record<number, Address> = {
+  11155111: "0x0BeC172d10d76aa41c0c7bD14185cfeD25742f4A",
+  84532: "0x58Ce84331d53268430586dB120c0463859fd02Fc",
+};
+/**
+ * How many blocks after the fill block to scan for the Hyperlane Dispatch event.
+ * The PostFill tx is submitted shortly after the fill, so 200 blocks is conservative.
+ * Can be overridden via HYPERLANE_POST_FILL_SCAN_BLOCKS env var.
+ */
+const HYPERLANE_POST_FILL_SCAN_BLOCKS = BigInt(
+  process.env.HYPERLANE_POST_FILL_SCAN_BLOCKS ?? "200",
+);
 const ORDER_CACHE_DIR = join(process.cwd(), ".oif-orders");
 
 type OrderTrackingContext = {
@@ -282,6 +333,8 @@ type OrderTrackingContext = {
 };
 
 type OrderPreviewData = Record<string, unknown>;
+
+type OrderPhase = "open" | "fill" | "submit" | "finalize";
 
 type SettledResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -1112,6 +1165,7 @@ async function ensureBalance(args: {
 }
 
 async function handleOpenFor(flags: Record<string, string | boolean>) {
+  // 1. 解析命令列參數 (與 open 相同)
   const fromChainKey = parseChain(requiredFlag(flags, "from-chain"));
   const toChainKey = parseChain(requiredFlag(flags, "to-chain"));
   const fromTokenKey = parseToken(requiredFlag(flags, "from-token"));
@@ -1191,6 +1245,7 @@ async function handleOpenFor(flags: Record<string, string | boolean>) {
     transport: http(fromChain.rpcUrl),
   });
 
+  // 2. 檢查餘額
   await ensureBalance({
     publicClient,
     tokenAddress: fromToken.address,
@@ -1199,6 +1254,8 @@ async function handleOpenFor(flags: Record<string, string | boolean>) {
     tokenLabel: `${fromChain.displayName} ${fromTokenKey}`,
   });
 
+  // 3. 檢查並處理 Allowance (授權給 Permit2)
+  // 注意：這裡是授權給 PERMIT2_ADDRESS，因為 openFor 是透過 Permit2 進行代扣
   await ensureAllowance({
     publicClient,
     walletClient,
@@ -1216,6 +1273,8 @@ async function handleOpenFor(flags: Record<string, string | boolean>) {
     ],
   });
 
+  // 4. 產生 Permit2 簽章 (Off-chain)
+  // 這裡並不會發送鏈上交易，而是使用 USER_PRIVATE_KEY 對訂單內容進行 EIP-712 簽章
   const signature = await signQuoteOrder(account, quote.order);
 
   printOrderPreview({
@@ -1242,6 +1301,9 @@ async function handleOpenFor(flags: Record<string, string | boolean>) {
     console.log(`validUntil: ${quote.validUntil}`);
   }
 
+  // 5. 將 Quote ID 與 簽章 提交給 Solver API（計時器從此刻開始）
+  // 這是 openFor 唯一與 Solver 互動的寫入動作
+  const openForStartMs = Date.now();
   const orderResponse = await fetchJson<OrderApiResponse>(
     `${SOLVER_BASE_URL}/orders`,
     {
@@ -1261,36 +1323,43 @@ async function handleOpenFor(flags: Record<string, string | boolean>) {
     console.log(`message: ${orderResponse.message}`);
   }
 
+  // 6. 狀態確認機制：若有 --wait，以多來源並行追蹤至 finalize
   if (waitForOrder && orderResponse.orderId) {
-    await waitForOrderCompletion(orderResponse.orderId, {
-      orderId: orderResponse.orderId,
-      sourceChainKey: fromChainKey,
-      destinationChainKey: toChainKey,
-      inputSettlerAddress:
-        quoteSpender !== zeroAddress
-          ? quoteSpender
-          : resolveInputSettlerAddress(fromChain.chainId),
-      outputSettlerAddress: OUTPUT_SETTLER_MAP[toChain.chainId],
-      standardOrder,
-    });
+    await waitForOrderCompletion(
+      orderResponse.orderId,
+      {
+        orderId: orderResponse.orderId,
+        sourceChainKey: fromChainKey,
+        destinationChainKey: toChainKey,
+        inputSettlerAddress:
+          quoteSpender !== zeroAddress
+            ? quoteSpender
+            : resolveInputSettlerAddress(fromChain.chainId),
+        outputSettlerAddress: OUTPUT_SETTLER_MAP[toChain.chainId],
+        standardOrder,
+      },
+      openForStartMs,
+    );
   }
 }
 
 async function handleOpen(flags: Record<string, string | boolean>) {
+  // 1. 解析命令列參數 (來源鏈、目的鏈、代幣、數量等)
   const fromChainKey = parseChain(requiredFlag(flags, "from-chain"));
   const toChainKey = parseChain(requiredFlag(flags, "to-chain"));
   const fromTokenKey = parseToken(requiredFlag(flags, "from-token"));
   const toTokenKey = parseToken(requiredFlag(flags, "to-token"));
   const amount = requiredFlag(flags, "amount");
   const minOutput = stringFlag(flags, "min-output");
-  const waitForSolver = Boolean(flags.wait);
+  const waitForSolver = Boolean(flags.wait); // 是否等待 solver 處理完成
   const autoApprove = Boolean(flags["auto-approve"]);
-  const account = getUserAccount();
+  const account = getUserAccount(); // 取得 USER_PRIVATE_KEY 對應的帳戶
 
   if (fromChainKey === toChainKey) {
     throw new Error("此腳本目前只支援跨鏈交換，來源鏈與目標鏈不可相同。");
   }
 
+  // 2. 準備鏈與代幣的設定資料
   const fromChain = CHAIN_CONFIG[fromChainKey];
   const toChain = CHAIN_CONFIG[toChainKey];
   const receiver = resolveReceiver(
@@ -1299,6 +1368,8 @@ async function handleOpen(flags: Record<string, string | boolean>) {
   );
   const fromToken = await resolveTokenMetadata(fromChain.chainId, fromTokenKey);
   const toToken = await resolveTokenMetadata(toChain.chainId, toTokenKey);
+
+  // 3. 建構向 Solver 請求報價 (Quote) 的 Payload
   const requestBody = buildQuoteRequest({
     fromChainId: fromChain.chainId,
     toChainId: toChain.chainId,
@@ -1334,6 +1405,7 @@ async function handleOpen(flags: Record<string, string | boolean>) {
     ),
   );
 
+  // 4. 向 Solver API 取得 Quote
   const quoteResponse = await requestQuoteWithGuidance(
     requestBody,
     swapContext,
@@ -1341,12 +1413,14 @@ async function handleOpen(flags: Record<string, string | boolean>) {
   const quote = pickEscrowQuote(quoteResponse.quotes);
   const standardOrder = buildStandardOrderFromEscrowQuote(quote.order);
 
+  // 5. 安全性檢查：確保 Quote 的使用者與當前發送交易的帳戶一致
   if (standardOrder.user.toLowerCase() !== account.address.toLowerCase()) {
     throw new Error(
       `quote 內的 order.user=${standardOrder.user} 與當前帳戶 ${account.address} 不符，無法直接呼叫 open()。`,
     );
   }
 
+  // 6. 解析 InputSettler 合約地址
   const fallbackSettlerAddress = INPUT_SETTLER_MAP[fromChain.chainId];
   const quoteSpender = addressValue(
     quote.order.payload.message.spender,
@@ -1368,6 +1442,7 @@ async function handleOpen(flags: Record<string, string | boolean>) {
 
   const totalInputAmount = computeTotalInputAmount(standardOrder);
 
+  // 7. 初始化 Viem 的 PublicClient (讀取) 與 WalletClient (寫入)
   const publicClient = createPublicClient({
     chain: fromChain.viemChain,
     transport: http(fromChain.rpcUrl),
@@ -1378,6 +1453,7 @@ async function handleOpen(flags: Record<string, string | boolean>) {
     transport: http(fromChain.rpcUrl),
   });
 
+  // 8. 檢查使用者的 Token 餘額是否足夠
   await ensureBalance({
     publicClient,
     tokenAddress: fromToken.address,
@@ -1386,6 +1462,8 @@ async function handleOpen(flags: Record<string, string | boolean>) {
     tokenLabel: `${fromChain.displayName} ${fromTokenKey}`,
   });
 
+  // 9. 檢查並處理 Allowance (授權給 InputSettler)
+  // 這裡與 openFor 不同，open 是直接授權給 InputSettler 合約，而不是 Permit2
   await ensureAllowance({
     publicClient,
     walletClient,
@@ -1403,6 +1481,7 @@ async function handleOpen(flags: Record<string, string | boolean>) {
     ],
   });
 
+  // 10. 計算預期的鏈上 Order ID
   const orderId = (await publicClient.readContract({
     address: inputSettlerAddress,
     abi: INPUT_SETTLER_ABI,
@@ -1433,6 +1512,8 @@ async function handleOpen(flags: Record<string, string | boolean>) {
     console.log(`validUntil: ${quote.validUntil}`);
   }
 
+  // 11. 正式發送鏈上 open() 交易（計時器從此刻開始）
+  const openStartMs = Date.now();
   let txHash: Hex;
   try {
     txHash = await walletClient.writeContract({
@@ -1442,13 +1523,13 @@ async function handleOpen(flags: Record<string, string | boolean>) {
       args: [standardOrder],
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     throw error;
   }
 
   console.log(`open() tx: ${txHash}`);
   console.log(`Explorer: ${fromChain.explorerBaseUrl}/tx/${txHash}`);
 
+  // 12. 等待交易上鏈確認
   const receipt = await publicClient.waitForTransactionReceipt({
     hash: txHash,
   });
@@ -1456,6 +1537,8 @@ async function handleOpen(flags: Record<string, string | boolean>) {
     throw new Error("open() 交易失敗。");
   }
   console.log(`open() 已確認，block=${receipt.blockNumber}`);
+
+  // 13. 將訂單資訊存入本地快取 (供日後 refund 使用)
   const orderFile = await saveOpenOrderRecord({
     version: 1,
     savedAt: new Date().toISOString(),
@@ -1474,16 +1557,21 @@ async function handleOpen(flags: Record<string, string | boolean>) {
   });
   console.log(`order file: ${orderFile}`);
 
+  // 14. 狀態確認機制：若有 --wait，以多來源並行追蹤至 finalize
   if (waitForSolver) {
-    await waitForOnchainOrderCompletion(orderId, {
+    await waitForOnchainOrderCompletion(
       orderId,
-      sourceChainKey: fromChainKey,
-      destinationChainKey: toChainKey,
-      inputSettlerAddress,
-      outputSettlerAddress: OUTPUT_SETTLER_MAP[toChain.chainId],
-      standardOrder,
-      openTxHash: txHash,
-    });
+      {
+        orderId,
+        sourceChainKey: fromChainKey,
+        destinationChainKey: toChainKey,
+        inputSettlerAddress,
+        outputSettlerAddress: OUTPUT_SETTLER_MAP[toChain.chainId],
+        standardOrder,
+        openTxHash: txHash,
+      },
+      openStartMs,
+    );
   }
 }
 
@@ -1516,47 +1604,166 @@ function resolveReceiver(
   return receiver;
 }
 
+/** 計算下一輪輪詢間隔：指數退避（×1.5），上限為 MAX_POLL_INTERVAL_MS */
+function nextPollInterval(current: number): number {
+  return Math.min(Math.round(current * 1.5), MAX_POLL_INTERVAL_MS);
+}
+
+/**
+ * 從 snapshot 的任何已知欄位萃取 fillTxHash，
+ * 避免對 Record<string,unknown> 做複雜型別斷言。
+ */
+function extractFillTxHash(snapshot: Record<string, unknown>): Hex | undefined {
+  const solver = snapshot["solver"] as Record<string, unknown> | undefined;
+  const solverHash = (
+    solver?.["fill交易"] as Record<string, unknown> | undefined
+  )?.["hash"];
+  if (typeof solverHash === "string" && solverHash.startsWith("0x"))
+    return solverHash as Hex;
+
+  const dest = snapshot["目的鏈"] as Record<string, unknown> | undefined;
+  const ofEntry = dest?.["OutputFilled事件"] as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  const ofHash = ofEntry?.["transactionHash"];
+  if (typeof ofHash === "string" && ofHash.startsWith("0x"))
+    return ofHash as Hex;
+
+  return undefined;
+}
+
 async function waitForOrderCompletion(
   orderId: string,
   trackingContext?: OrderTrackingContext,
+  startMs?: number,
 ) {
-  console.log("開始以多來源輪詢訂單狀態...");
+  const timerStart = startMs ?? Date.now();
+  console.log("\n  開始以多來源並行追蹤訂單完整流程...");
   const deadline = Date.now() + ORDER_TIMEOUT_MS;
-  let lastStatus = "";
-  let warnedMissingOrder = false;
-  let lastTrackingSnapshot = "";
+  let lastSnapshotJson = "";
+  let pollInterval = BASE_POLL_INTERVAL_MS;
+
+  // --- Per-session caches (items B & C) ---
+  let cachedFillTxHash: Hex | undefined;
+  let cachedOutputFilledResult:
+    | SettledResult<OutputFilledCacheEntry>
+    | undefined;
+
+  // Item A: estimate destination chain start block from open tx timestamp (once).
+  let outputFilledFromBlock: bigint | undefined;
+  if (trackingContext?.openTxHash) {
+    try {
+      outputFilledFromBlock =
+        await estimateDestChainStartBlock(trackingContext);
+      if (outputFilledFromBlock !== undefined) {
+        console.log(
+          `  OutputFilled 掃描起始區塊（目的鏈估算）: ${outputFilledFromBlock}`,
+        );
+      }
+    } catch {
+      // Non-fatal; fall back to env-variable lookback range
+    }
+  }
 
   while (Date.now() < deadline) {
     if (trackingContext) {
-      lastTrackingSnapshot = await printTrackingSnapshotIfChanged(
-        trackingContext,
-        lastTrackingSnapshot,
-      );
-    }
-    try {
-      const order = await fetchSolverOrder(orderId);
-      lastStatus = printStatusIfChanged(orderId, order, lastStatus);
+      const snapshot = await buildTrackingSnapshot(trackingContext, {
+        knownFillTxHash: cachedFillTxHash,
+        knownOutputFilledResult: cachedOutputFilledResult,
+        outputFilledFromBlock,
+      });
 
-      if (isTerminalStatus(order.status)) {
+      // Cache fillTxHash as soon as it appears (item C)
+      if (!cachedFillTxHash) {
+        const found = extractFillTxHash(snapshot as Record<string, unknown>);
+        if (found) {
+          cachedFillTxHash = found;
+          // Also cache the OutputFilled display entry to reuse in later rounds
+          const dest = (snapshot as Record<string, unknown>)["目的鏈"] as
+            | Record<string, unknown>
+            | undefined;
+          const ofEntry = dest?.["OutputFilled事件"] as
+            | Record<string, unknown>
+            | null
+            | undefined;
+          if (ofEntry && "transactionHash" in ofEntry) {
+            cachedOutputFilledResult = {
+              ok: true as const,
+              value: {
+                blockNumber:
+                  typeof ofEntry["blockNumber"] === "string"
+                    ? ofEntry["blockNumber"]
+                    : null,
+                transactionHash:
+                  typeof ofEntry["transactionHash"] === "string"
+                    ? (ofEntry["transactionHash"] as Hex)
+                    : null,
+              },
+            };
+          }
+        }
+      }
+
+      const snapshotJson = JSON.stringify(snapshot);
+      if (snapshotJson !== lastSnapshotJson) {
+        printTrackingSnapshotSections(snapshot as Record<string, unknown>);
+        // Phase changed: reset backoff so next transition is caught quickly
+        pollInterval = BASE_POLL_INTERVAL_MS;
+        lastSnapshotJson = snapshotJson;
+      }
+
+      const { terminated, confirmedBy, isFailed } = checkTermination(
+        snapshot as Record<string, unknown>,
+      );
+      if (terminated) {
+        const elapsed = Date.now() - timerStart;
+        console.log(`\n${"═".repeat(54)}`);
+        if (isFailed) {
+          console.log("  [✗] 訂單流程已失敗！");
+        } else {
+          console.log("  [✓] 訂單流程已全部確認完成！");
+        }
+        console.log(`  確認來源: ${confirmedBy.join(" | ")}`);
+        console.log(`  ⏱  開單至結算總耗時: ${formatDuration(elapsed)}`);
+        console.log("═".repeat(54));
         return;
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('"error": "ORDER_NOT_FOUND"')) {
-        if (!warnedMissingOrder) {
-          console.log("訂單已送出，但 solver 尚未完成索引，等待後重試...");
-          warnedMissingOrder = true;
+    } else {
+      // No tracking context: simple solver API polling (fallback)
+      try {
+        const order = await fetchSolverOrder(orderId);
+        const statusText = formatOrderStatus(order.status);
+        if (statusText !== lastSnapshotJson) {
+          printOrderStatusSummary(orderId, order);
+          pollInterval = BASE_POLL_INTERVAL_MS;
+          lastSnapshotJson = statusText;
         }
-        await sleep(POLL_INTERVAL_MS);
-        continue;
+        if (isTerminalStatus(order.status)) {
+          if (startMs !== undefined) {
+            const elapsed = Date.now() - timerStart;
+            console.log(`  ⏱  總耗時: ${formatDuration(elapsed)}`);
+          }
+          return;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('"error": "ORDER_NOT_FOUND"')) {
+          console.log("  訂單已送出，但 solver 尚未完成索引，等待後重試...");
+          await sleep(pollInterval);
+          pollInterval = nextPollInterval(pollInterval);
+          continue;
+        }
+        throw error;
       }
-      throw error;
     }
-
-    await sleep(POLL_INTERVAL_MS);
+    await sleep(pollInterval);
+    pollInterval = nextPollInterval(pollInterval);
   }
 
-  throw new Error(`輪詢逾時，請手動查詢訂單狀態: ${orderId}`);
+  throw new Error(
+    `輪詢逾時 (${Math.floor(ORDER_TIMEOUT_MS / 60000)} 分鐘)，請手動查詢訂單狀態: ${orderId}`,
+  );
 }
 
 function isTerminalStatus(status: string | { failed: [string, string] }) {
@@ -1599,73 +1806,231 @@ function formatOrderStatus(status: string | { failed: [string, string] }) {
 async function waitForOnchainOrderCompletion(
   orderId: Hex,
   trackingContext?: OrderTrackingContext,
+  startMs?: number,
 ) {
-  const candidates = [orderId.slice(2), orderId];
-  console.log("開始以多來源輪詢 solver 是否已偵測到 on-chain 訂單...");
-  const deadline = Date.now() + ORDER_TIMEOUT_MS;
-  let detectedOrderId: string | undefined;
-  let lastStatus = "";
-  let lastTrackingSnapshot = "";
-
-  while (Date.now() < deadline) {
-    if (trackingContext) {
-      lastTrackingSnapshot = await printTrackingSnapshotIfChanged(
-        trackingContext,
-        lastTrackingSnapshot,
-      );
-    }
-    let found = false;
-
-    for (const candidate of candidates) {
-      try {
-        const order = await fetchSolverOrder(candidate);
-
-        found = true;
-        if (!detectedOrderId) {
-          detectedOrderId = candidate;
-          console.log(`solver 已偵測到訂單: ${candidate}`);
-        }
-        lastStatus = printStatusIfChanged(candidate, order, lastStatus);
-
-        if (isTerminalStatus(order.status)) {
-          return;
-        }
-
-        break;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!message.includes('"error": "ORDER_NOT_FOUND"')) {
-          throw error;
-        }
-      }
-    }
-
-    if (!found && !detectedOrderId) {
-      console.log("solver 尚未偵測到 open 事件，等待後重試...");
-    }
-
-    await sleep(POLL_INTERVAL_MS);
-  }
-
-  throw new Error(`輪詢逾時，solver 仍未完成 on-chain 訂單處理: ${orderId}`);
+  console.log(
+    "  on-chain 開單模式：Solver 可能尚未索引，將以鏈上狀態為主要確認來源。",
+  );
+  // Delegate to unified multi-source tracking loop.
+  // buildTrackingSnapshot internally tries both 0x-prefixed and plain orderId
+  // when the solver returns ORDER_NOT_FOUND.
+  await waitForOrderCompletion(orderId, trackingContext, startMs);
 }
 
 function printTrackingSnapshotSections(snapshot: Record<string, unknown>) {
-  console.log("多來源追蹤摘要:");
+  const phase = detectPhase(snapshot);
+  const allPhases: OrderPhase[] = ["open", "fill", "submit", "finalize"];
+
+  // Detect whether the order is in a failure state (solver API returned failed:*)
+  const isFailed = (() => {
+    const sol = snapshot["solver"] as Record<string, unknown> | undefined;
+    if (sol && "訂單狀態" in sol) {
+      return String(sol["訂單狀態"]).startsWith("failed:");
+    }
+    return false;
+  })();
+
+  const icon = (p: OrderPhase): string => {
+    const ci = allPhases.indexOf(phase);
+    const pi = allPhases.indexOf(p);
+    if (pi < ci) return "[✓]";
+    if (pi === ci) return isFailed ? "[✗]" : "[~]";
+    return "[ ]";
+  };
+
+  const note = (p: OrderPhase): string => {
+    const ci = allPhases.indexOf(phase);
+    const pi = allPhases.indexOf(p);
+    if (pi < ci) return "已確認";
+    if (pi === ci) {
+      if (isFailed) return "失敗";
+      const m: Record<OrderPhase, string> = {
+        open: "等待訂單送出確認...",
+        fill: "等待 Solver 目的鏈成交...",
+        submit: "等待 Hyperlane 跨鏈訊息投遞...",
+        finalize: "等待來源鏈結算確認...",
+      };
+      return m[p];
+    }
+    const n: Record<OrderPhase, string> = {
+      open: "",
+      fill: "(等待開單後啟動)",
+      submit: "(等待 Fill 完成後啟動)",
+      finalize: "(等待跨鏈訊息後啟動)",
+    };
+    return n[p];
+  };
+
+  const bar = "═".repeat(54);
+  const sep = "─".repeat(54);
   const orderId = snapshot["訂單識別"];
-  if (orderId !== undefined) {
-    console.log(`訂單識別: ${String(orderId)}`);
+  const shortId = orderId
+    ? (() => {
+        const s = String(orderId);
+        return s.length > 24 ? `${s.slice(0, 10)}...${s.slice(-10)}` : s;
+      })()
+    : "";
+
+  console.log(`\n${bar}`);
+  if (shortId) console.log(`  訂單監控  ${shortId}`);
+  console.log(bar);
+  console.log(`  ${icon("open")}   ① OPEN / openFor     ${note("open")}`);
+  console.log(`  ${icon("fill")}   ② FILL               ${note("fill")}`);
+  console.log(`  ${icon("submit")} ③ SUBMIT (Hyperlane)  ${note("submit")}`);
+  console.log(`  ${icon("finalize")} ④ FINALIZE           ${note("finalize")}`);
+  console.log(sep);
+
+  // Determine if ALL active data sources have errors (for error suppression logic)
+  const keys = ["solver", "來源鏈", "目的鏈", "Hyperlane"];
+  const available = keys.filter(
+    (k) => snapshot[k] !== null && snapshot[k] !== undefined,
+  );
+  const errored = available.filter((k) => {
+    const d = snapshot[k];
+    return (
+      typeof d === "object" &&
+      d !== null &&
+      "錯誤" in (d as Record<string, unknown>)
+    );
+  });
+  const allFailed = errored.length > 0 && errored.length === available.length;
+
+  // ── Solver API ──
+  {
+    const d = snapshot["solver"] as Record<string, unknown> | undefined;
+    if (d) {
+      const isErr = "錯誤" in d;
+      if (isErr && !allFailed) {
+        console.log("\n  [ Solver API ] (暫時無法取得)");
+      } else {
+        console.log("\n  [ Solver API ]");
+        if (isErr) {
+          console.log(`    錯誤: ${d["錯誤"]}`);
+        } else {
+          console.log(`    訂單狀態: ${d["訂單狀態"]}`);
+          const ft = d["fill交易"] as
+            | Record<string, unknown>
+            | null
+            | undefined;
+          if (ft && "hash" in ft) {
+            console.log(`    Fill 交易: ${ft["hash"]}`);
+          }
+        }
+      }
+    }
   }
-  const sections: Array<[string, string]> = [
-    ["來源鏈", "來源鏈"],
-    ["solver", "solver"],
-    ["目的鏈", "目的鏈"],
-    ["Hyperlane", "Hyperlane"],
-  ];
-  for (const [title, key] of sections) {
-    console.log(`--- ${title} ---`);
-    console.log(JSON.stringify(snapshot[key] ?? null, null, 2));
+
+  // ── 來源鏈 InputSettler ──
+  {
+    const d = snapshot["來源鏈"] as Record<string, unknown> | undefined;
+    if (d) {
+      const isErr = "錯誤" in d;
+      console.log(`\n  [ ① 來源鏈 ] ${d["鏈名稱"] ?? ""}`);
+      if (isErr && !allFailed) {
+        console.log("    (暫時無法取得)");
+      } else if (isErr) {
+        console.log(`    錯誤: ${d["錯誤"]}`);
+      } else {
+        const escrow = d["escrow狀態"] as Record<string, unknown> | undefined;
+        if (escrow && "label" in escrow) {
+          console.log(`    InputSettler 狀態: ${escrow["label"]}`);
+        }
+        const fin = d["Finalised事件"] as
+          | Record<string, unknown>
+          | null
+          | undefined;
+        if (fin == null) {
+          // not yet available
+        } else if ("transactionHash" in fin) {
+          if (fin["transactionHash"]) {
+            console.log(
+              `    Finalised 事件: block ${fin["blockNumber"]}, tx ${String(fin["transactionHash"]).slice(0, 18)}...`,
+            );
+          } else {
+            console.log("    Finalised 事件: 尚未發現");
+          }
+        } else if ("狀態" in fin) {
+          console.log(`    Finalised 掃描: ${fin["狀態"]}`);
+        }
+      }
+    }
   }
+
+  // ── 目的鏈 OutputSettler ──
+  {
+    const d = snapshot["目的鏈"] as Record<string, unknown> | undefined;
+    if (d) {
+      console.log(`\n  [ ② 目的鏈 ] ${d["鏈名稱"] ?? ""}`);
+      // OutputFilled event (orderId-indexed scan — primary on-chain fallback)
+      const of_ = d["OutputFilled事件"];
+      if (of_ !== undefined) {
+        if (of_ == null) {
+          console.log("    OutputFilled 事件: 尚未偵測到");
+        } else if (
+          typeof of_ === "object" &&
+          "transactionHash" in (of_ as Record<string, unknown>)
+        ) {
+          const o = of_ as Record<string, unknown>;
+          if (o["transactionHash"]) {
+            console.log(
+              `    OutputFilled 事件: block ${o["blockNumber"]}, tx ${String(o["transactionHash"]).slice(0, 18)}...`,
+            );
+          } else {
+            console.log("    OutputFilled 事件: 尚未偵測到");
+          }
+        } else if (
+          typeof of_ === "object" &&
+          "錯誤" in (of_ as Record<string, unknown>) &&
+          allFailed
+        ) {
+          console.log(
+            `    OutputFilled 掃描錯誤: ${(of_ as Record<string, unknown>)["錯誤"]}`,
+          );
+        }
+      }
+      // Fill receipt (from solver fill tx hash)
+      const fr = d["fillReceipt"] as Record<string, unknown> | null | undefined;
+      if (fr && "status" in fr) {
+        console.log(
+          `    Fill 收據: ${fr["status"]} (block ${fr["blockNumber"] ?? "?"})`,
+        );
+      }
+    }
+  }
+
+  // ── Hyperlane 跨鏈訊息 ──
+  {
+    const d = snapshot["Hyperlane"];
+    if (d !== null && d !== undefined) {
+      const hd = d as Record<string, unknown>;
+      const isErr = "錯誤" in hd;
+      if (isErr && !allFailed) {
+        // suppress individual Hyperlane error when other sources work
+      } else {
+        console.log("\n  [ ③ Hyperlane 跨鏈訊息 ]");
+        if (isErr) {
+          console.log(`    錯誤: ${hd["錯誤"]}`);
+        } else if ("messageId" in hd) {
+          const mid = String(hd["messageId"]);
+          console.log(`    訊息 ID: ${mid.slice(0, 18)}...`);
+          const mv = hd["messageView"] as
+            | Record<string, unknown>
+            | null
+            | undefined;
+          if (mv && "is_delivered" in mv) {
+            console.log(`    已投遞: ${mv["is_delivered"]}`);
+            if (mv["delivery_occurred_at"]) {
+              console.log(`    投遞時間: ${mv["delivery_occurred_at"]}`);
+            }
+          }
+        } else if ("狀態" in hd) {
+          console.log(`    ${hd["狀態"]}`);
+        }
+      }
+    }
+  }
+
+  console.log(`\n${bar}`);
 }
 
 async function printTrackingSnapshotIfChanged(
@@ -1719,6 +2084,12 @@ export function buildTrackingSummaryData(args: {
         logCount: number;
         topics: Array<Hex | null>;
       }>
+    | undefined;
+  outputFilledResult?:
+    | SettledResult<{
+        blockNumber: string | null;
+        transactionHash: Hex | null;
+      } | null>
     | undefined;
   mailboxDispatchResult?: SettledResult<Hex | null> | undefined;
   hyperlaneResult?: SettledResult<Record<string, unknown> | null> | undefined;
@@ -1774,6 +2145,12 @@ export function buildTrackingSummaryData(args: {
         : args.outputSettlerLogsResult
           ? { 錯誤: outputSettlerLogsError ?? "未知錯誤" }
           : null,
+      OutputFilled事件:
+        args.outputFilledResult === undefined
+          ? undefined
+          : args.outputFilledResult.ok
+            ? args.outputFilledResult.value
+            : { 錯誤: args.outputFilledResult.error },
     },
     Hyperlane: (() => {
       if (!args.mailboxDispatchResult) {
@@ -1801,7 +2178,207 @@ export function buildTrackingSummaryData(args: {
   };
 }
 
-async function buildTrackingSnapshot(context: OrderTrackingContext) {
+function formatDuration(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h} 小時 ${m} 分 ${s} 秒`;
+  if (m > 0) return `${m} 分 ${s} 秒`;
+  return `${s} 秒`;
+}
+
+function detectPhase(snapshot: Record<string, unknown>): OrderPhase {
+  const src = snapshot["來源鏈"] as Record<string, unknown> | undefined;
+  const finalised = src?.["Finalised事件"] as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (
+    finalised &&
+    "transactionHash" in finalised &&
+    finalised["transactionHash"]
+  ) {
+    return "finalize";
+  }
+  const escrow = src?.["escrow狀態"] as Record<string, unknown> | undefined;
+  if (escrow && "code" in escrow) {
+    const c = Number(escrow["code"]);
+    if (c === 2 || c === 3) return "finalize";
+  }
+  const solver = snapshot["solver"] as Record<string, unknown> | undefined;
+  if (solver && "訂單狀態" in solver) {
+    const st = String(solver["訂單狀態"]);
+    if (st === "finalized") return "finalize";
+    if (st.startsWith("failed:")) {
+      // Parse the phase name from "failed:{Phase}:{message}" to show the
+      // failure icon on the correct phase row rather than on "finalize".
+      const phasePart = st.split(":")[1]?.toLowerCase() ?? "";
+      if (phasePart === "fill") return "fill";
+      if (phasePart === "submit") return "submit";
+      if (phasePart === "finalize") return "finalize";
+      return "finalize"; // unknown phase → default to finalize
+    }
+  }
+  const hyper = snapshot["Hyperlane"] as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (hyper && "messageId" in hyper) return "submit";
+  const dest = snapshot["目的鏈"] as Record<string, unknown> | undefined;
+  if (dest) {
+    const fillReceipt = dest["fillReceipt"] as
+      | Record<string, unknown>
+      | null
+      | undefined;
+    if (fillReceipt && "status" in fillReceipt) return "fill";
+    const outputFilled = dest["OutputFilled事件"] as
+      | Record<string, unknown>
+      | null
+      | undefined;
+    if (
+      outputFilled &&
+      "transactionHash" in outputFilled &&
+      outputFilled["transactionHash"]
+    )
+      return "fill";
+    const outputSettler = dest["OutputSettler掃描"] as
+      | Record<string, unknown>
+      | null
+      | undefined;
+    if (
+      outputSettler &&
+      "logCount" in outputSettler &&
+      Number(outputSettler["logCount"]) > 0
+    )
+      return "fill";
+  }
+  if (solver && "fill交易" in solver) {
+    const ft = solver["fill交易"] as Record<string, unknown> | null | undefined;
+    if (ft && "hash" in ft) return "fill";
+  }
+  return "open";
+}
+
+function checkTermination(snapshot: Record<string, unknown>): {
+  terminated: boolean;
+  confirmedBy: string[];
+  isFailed: boolean;
+} {
+  const confirmedBy: string[] = [];
+  let isFailed = false;
+  const solver = snapshot["solver"] as Record<string, unknown> | undefined;
+  if (solver && "訂單狀態" in solver) {
+    const st = String(solver["訂單狀態"]);
+    if (st === "finalized") {
+      confirmedBy.push("Solver API (finalized)");
+    } else if (st.startsWith("failed:")) {
+      confirmedBy.push(`Solver API (${st})`);
+      isFailed = true;
+    }
+  }
+  const src = snapshot["來源鏈"] as Record<string, unknown> | undefined;
+  const escrow = src?.["escrow狀態"] as Record<string, unknown> | undefined;
+  if (escrow && "code" in escrow) {
+    const c = Number(escrow["code"]);
+    if (c === 2) confirmedBy.push("InputSettler 鏈上: Claimed");
+    else if (c === 3) confirmedBy.push("InputSettler 鏈上: Refunded");
+  }
+  const finalised = src?.["Finalised事件"] as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (
+    finalised &&
+    "transactionHash" in finalised &&
+    finalised["transactionHash"]
+  ) {
+    confirmedBy.push(`Finalised 事件 (block ${finalised["blockNumber"]})`);
+  }
+  return { terminated: confirmedBy.length > 0, confirmedBy, isFailed };
+}
+
+type OutputFilledCacheEntry = {
+  blockNumber: string | null;
+  transactionHash: Hex | null;
+} | null;
+
+type TrackingSnapshotOpts = {
+  /**
+   * 若 fillTxHash 已在前一輪確認，跳過 OutputFilled 掃描（加快後期輪詢）。
+   * 優先於任何掃描結果作為 Phase 2 的起點。
+   */
+  knownFillTxHash?: Hex;
+  /**
+   * 已快取的 OutputFilled 事件結果（避免重複掃描，用於顯示）。
+   * 只在 knownFillTxHash 已知時使用。
+   */
+  knownOutputFilledResult?: SettledResult<OutputFilledCacheEntry>;
+  /**
+   * OutputFilled 掃描的起始區塊提示（由 open tx 時間戳估算）。
+   * 若未提供則退回預設回溯範圍。
+   */
+  outputFilledFromBlock?: bigint;
+};
+
+/**
+ * 利用 open tx 的區塊時間戳，估算目的鏈上對應的區塊號碼，
+ * 作為 OutputFilled 掃描的起點，避免掃描過多無關歷史區塊。
+ */
+async function estimateDestChainStartBlock(
+  context: OrderTrackingContext,
+): Promise<bigint | undefined> {
+  if (!context.openTxHash) return undefined;
+  const sourceChain = CHAIN_CONFIG[context.sourceChainKey];
+  const destChain = CHAIN_CONFIG[context.destinationChainKey];
+  const sourceClient = createPublicClient({
+    chain: sourceChain.viemChain,
+    transport: http(sourceChain.rpcUrl),
+  });
+  const destClient = createPublicClient({
+    chain: destChain.viemChain,
+    transport: http(destChain.rpcUrl),
+  });
+  try {
+    // Parallel: source receipt + dest latest block
+    const [sourceReceipt, destLatest] = await Promise.all([
+      sourceClient.getTransactionReceipt({ hash: context.openTxHash }),
+      destClient.getBlock({ blockTag: "latest" }),
+    ]);
+    // Parallel: source open block timestamp + dest sample block for avg block time
+    const sampleSize = 200n;
+    const [sourceOpenBlock, destSampleBlock] = await Promise.all([
+      sourceClient.getBlock({ blockNumber: sourceReceipt.blockNumber }),
+      destClient.getBlock({
+        blockNumber:
+          destLatest.number > sampleSize ? destLatest.number - sampleSize : 0n,
+      }),
+    ]);
+    const openTimestamp = Number(sourceOpenBlock.timestamp);
+    const latestDestTimestamp = Number(destLatest.timestamp);
+    const latestDestNumber = destLatest.number;
+    if (openTimestamp >= latestDestTimestamp) return latestDestNumber;
+
+    // Average block time (seconds/block) on destination chain
+    const sampledBlocks = Number(latestDestNumber - destSampleBlock.number);
+    if (sampledBlocks <= 0) return undefined;
+    const avgBlockTime =
+      (latestDestTimestamp - Number(destSampleBlock.timestamp)) / sampledBlocks;
+    if (avgBlockTime <= 0) return undefined;
+
+    // Estimated blocks to go back, with a 200-block safety buffer
+    const secondsAgo = latestDestTimestamp - openTimestamp;
+    const blocksBack = BigInt(Math.ceil(secondsAgo / avgBlockTime) + 200);
+    return latestDestNumber > blocksBack ? latestDestNumber - blocksBack : 0n;
+  } catch {
+    return undefined;
+  }
+}
+
+async function buildTrackingSnapshot(
+  context: OrderTrackingContext,
+  opts?: TrackingSnapshotOpts,
+) {
   const sourceChain = CHAIN_CONFIG[context.sourceChainKey];
   const destinationChain = CHAIN_CONFIG[context.destinationChainKey];
   const sourceClient = createPublicClient({
@@ -1813,47 +2390,92 @@ async function buildTrackingSnapshot(context: OrderTrackingContext) {
     transport: http(destinationChain.rpcUrl),
   });
   const normalizedOrderId = normalizeOrderIdHex(context.orderId);
+  const noId = { ok: false as const, error: "orderId 不是 bytes32" };
 
-  const solverOrderResult = await settledValue(() =>
-    fetchSolverOrder(context.orderId),
-  );
-  const sourceOrderStatusResult = normalizedOrderId
-    ? await settledValue(() =>
-        fetchOnchainOrderStatus(
-          sourceClient,
-          context.inputSettlerAddress,
-          normalizedOrderId,
-        ),
-      )
-    : {
-        ok: false as const,
-        error: "orderId 不是 bytes32，無法查鏈上 orderStatus",
-      };
-  let finalisedAnchorBlock: bigint | undefined;
-  const openTxHashForAnchor = context.openTxHash;
-  if (normalizedOrderId && openTxHashForAnchor) {
-    const anchorResult = await settledValue(() =>
-      sourceClient.getTransactionReceipt({ hash: openTxHashForAnchor }),
+  // Phase 1: All independent queries run in parallel.
+  // If knownFillTxHash is already cached, skip the expensive OutputFilled scan (item C).
+  const [solverOrderResult, sourceOrderStatusResult, finalisedLogResult] =
+    await Promise.all([
+      // Solver HTTP API — also tries without 0x prefix for on-chain open mode
+      settledValue(async () => {
+        try {
+          return await fetchSolverOrder(context.orderId);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (
+            msg.includes('"error": "ORDER_NOT_FOUND"') &&
+            context.orderId.startsWith("0x")
+          ) {
+            return await fetchSolverOrder(context.orderId.slice(2));
+          }
+          throw e;
+        }
+      }),
+      // Source chain: InputSettler orderStatus
+      normalizedOrderId
+        ? settledValue(() =>
+            fetchOnchainOrderStatus(
+              sourceClient,
+              context.inputSettlerAddress,
+              normalizedOrderId,
+            ),
+          )
+        : Promise.resolve({
+            ...noId,
+            error: "orderId 不是 bytes32，無法查鏈上 orderStatus",
+          }),
+      // Source chain: Finalised event scan (no anchor block needed for testnets)
+      normalizedOrderId
+        ? settledValue(() =>
+            findFinalisedLog(
+              sourceClient,
+              context.inputSettlerAddress,
+              normalizedOrderId,
+            ),
+          )
+        : Promise.resolve({
+            ...noId,
+            error: "orderId 不是 bytes32，無法掃 Finalised 事件",
+          }),
+    ]);
+
+  // Destination chain: OutputFilled event scan — skipped when fillTxHash already known.
+  let outputFilledResult: SettledResult<OutputFilledCacheEntry>;
+  if (opts?.knownFillTxHash) {
+    // Re-use the cached result from a previous iteration; no need to re-scan.
+    outputFilledResult = opts.knownOutputFilledResult ?? {
+      ok: true as const,
+      value: null,
+    };
+  } else if (normalizedOrderId) {
+    outputFilledResult = await settledValue(() =>
+      findOutputSettlerFillLog(
+        destinationClient,
+        context.outputSettlerAddress,
+        normalizedOrderId,
+        opts?.outputFilledFromBlock,
+      ),
     );
-    if (anchorResult.ok) {
-      finalisedAnchorBlock = anchorResult.value.blockNumber;
-    }
+  } else {
+    outputFilledResult = {
+      ...noId,
+      error: "orderId 不是 bytes32，無法掃 OutputFilled 事件",
+    };
   }
 
-  const finalisedLogResult = normalizedOrderId
-    ? await settledValue(() =>
-        findFinalisedLog(
-          sourceClient,
-          context.inputSettlerAddress,
-          normalizedOrderId,
-          finalisedAnchorBlock,
-        ),
-      )
-    : {
-        ok: false as const,
-        error: "orderId 不是 bytes32，無法掃 Finalised 事件",
-      };
+  // Determine fill tx hash: opts cache (fastest) → Solver API → OutputFilled event
+  const fillTxHashFromSolver =
+    solverOrderResult.ok && solverOrderResult.value.fillTransaction?.hash
+      ? (solverOrderResult.value.fillTransaction.hash as Hex)
+      : undefined;
+  const fillTxHashFromEvent =
+    outputFilledResult.ok && outputFilledResult.value?.transactionHash
+      ? outputFilledResult.value.transactionHash
+      : undefined;
+  const fillTxHash =
+    opts?.knownFillTxHash ?? fillTxHashFromSolver ?? fillTxHashFromEvent;
 
+  // Phase 2: Fill-tx-dependent queries run in parallel
   let fillReceiptResult:
     | SettledResult<
         Awaited<ReturnType<typeof destinationClient.getTransactionReceipt>>
@@ -1867,30 +2489,68 @@ async function buildTrackingSnapshot(context: OrderTrackingContext) {
     | SettledResult<Awaited<ReturnType<typeof fetchHyperlaneMessageView>>>
     | undefined;
 
-  const fillTxHash =
-    solverOrderResult.ok && solverOrderResult.value.fillTransaction?.hash
-      ? (solverOrderResult.value.fillTransaction.hash as Hex)
-      : undefined;
-
   if (fillTxHash) {
-    fillReceiptResult = await settledValue(() =>
-      destinationClient.getTransactionReceipt({ hash: fillTxHash }),
-    );
-    outputSettlerLogsResult = await settledValue(() =>
-      findOutputSettlerLogs(
-        destinationClient,
+    // Phase 2a: Get fill receipt + output settler logs in parallel
+    const [fillReceiptRaw, outputSettlerLogsRaw] = await Promise.all([
+      settledValue(() =>
+        destinationClient.getTransactionReceipt({ hash: fillTxHash }),
+      ),
+      settledValue(() =>
+        findOutputSettlerLogs(
+          destinationClient,
+          context.outputSettlerAddress,
+          fillTxHash,
+        ),
+      ),
+    ]);
+    fillReceiptResult = fillReceiptRaw;
+    outputSettlerLogsResult = outputSettlerLogsRaw;
+
+    // Extract OutputFilled from receipt logs — more reliable than a getLogs scan.
+    // OutputSettlerSimple.fill() always emits OutputFilled if the tx succeeded.
+    if (fillReceiptRaw.ok && fillReceiptRaw.value && normalizedOrderId) {
+      const fromReceipt = extractOutputFilledFromReceipt(
+        fillReceiptRaw.value.logs as readonly {
+          address: Address;
+          topics: readonly Hex[];
+          transactionHash: Hex | null;
+          blockNumber: bigint | null;
+        }[],
         context.outputSettlerAddress,
-        fillTxHash,
-      ),
-    );
-    mailboxDispatchResult = await settledValue(() =>
-      findMailboxDispatchId(
-        destinationClient,
-        HYPERLANE_MAILBOX_MAP[destinationChain.chainId],
-        fillTxHash,
-      ),
-    );
-    const mailboxDispatchId = mailboxDispatchResult.ok
+        normalizedOrderId,
+      );
+      if (fromReceipt !== null) {
+        // Override Phase 1 scan result with the authoritative receipt-based value.
+        outputFilledResult = { ok: true as const, value: fromReceipt };
+      }
+    }
+
+    // Phase 2b: Scan Hyperlane Mailbox for Dispatch event from the output oracle.
+    // The PostFill tx (separate from the fill tx) is what emits DispatchId.
+    // We filter by sender = output oracle and scan AFTER the fill block.
+    const fillBlock = fillReceiptRaw.ok
+      ? fillReceiptRaw.value?.blockNumber
+      : undefined;
+    const destChainId = destinationChain.chainId;
+    const outputOracleAddress = OUTPUT_ORACLE_MAP[destChainId];
+    const mailboxAddress = HYPERLANE_MAILBOX_MAP[destChainId];
+
+    if (fillBlock && mailboxAddress) {
+      // outputOracleAddress may be undefined (unknown chain); pass 1 will be skipped,
+      // pass 2 (DispatchId fallback) will still run.
+      mailboxDispatchResult = await settledValue(() =>
+        findMailboxDispatchIdAfterFill(
+          destinationClient,
+          mailboxAddress,
+          outputOracleAddress, // possibly undefined → skips pass 1
+          fillBlock,
+        ),
+      );
+    } else {
+      mailboxDispatchResult = { ok: true as const, value: null };
+    }
+
+    const mailboxDispatchId = mailboxDispatchResult?.ok
       ? mailboxDispatchResult.value
       : null;
     if (mailboxDispatchId) {
@@ -1917,6 +2577,7 @@ async function buildTrackingSnapshot(context: OrderTrackingContext) {
         }
       : fillReceiptResult,
     outputSettlerLogsResult,
+    outputFilledResult,
     mailboxDispatchResult,
     hyperlaneResult,
   });
@@ -2004,6 +2665,156 @@ async function findOutputSettlerLogs(
   };
 }
 
+/**
+ * Scan the destination-chain OutputSettler for an OutputFilled event whose
+ * orderId matches the given value.  This is the primary on-chain fallback for
+ * fill detection when the Solver API is unavailable or slow to index.
+ */
+async function findOutputSettlerFillLog(
+  publicClient: any,
+  outputSettlerAddress: Address,
+  orderId: Hex,
+  fromBlock?: bigint,
+) {
+  const latest = await publicClient.getBlockNumber();
+  // Use provided fromBlock if available (estimated from open tx timestamp),
+  // otherwise fall back to OUTPUT_FILLED_SCAN_LOOKBACK_BLOCKS env-configurable value.
+  const start =
+    fromBlock !== undefined
+      ? fromBlock
+      : latest > OUTPUT_FILLED_SCAN_LOOKBACK_BLOCKS
+        ? latest - OUTPUT_FILLED_SCAN_LOOKBACK_BLOCKS
+        : 0n;
+  let cursor = start;
+  while (cursor <= latest) {
+    const chunkEnd =
+      cursor + FINALISED_LOG_MAX_SPAN < latest
+        ? cursor + FINALISED_LOG_MAX_SPAN
+        : latest;
+    const logs = await publicClient.getLogs({
+      address: outputSettlerAddress,
+      event: OUTPUT_SETTLER_FILL_ABI[0],
+      args: { orderId },
+      fromBlock: cursor,
+      toBlock: chunkEnd,
+    });
+    if (logs.length > 0) {
+      const log = logs[logs.length - 1];
+      return {
+        blockNumber: log.blockNumber?.toString() ?? null,
+        transactionHash: (log.transactionHash ?? null) as Hex | null,
+      };
+    }
+    cursor = chunkEnd + 1n;
+  }
+  return null;
+}
+
+/**
+ * Scan fill receipt logs for an OutputFilled event matching the given orderId.
+ * This is the most reliable way to detect the event because:
+ *  - No extra getLogs RPC call is needed (receipt is already fetched in Phase 2)
+ *  - The event is guaranteed to be present if the fill tx succeeded
+ */
+function extractOutputFilledFromReceipt(
+  receiptLogs: readonly {
+    address: Address;
+    topics: readonly Hex[];
+    transactionHash: Hex | null;
+    blockNumber: bigint | null;
+  }[],
+  outputSettlerAddress: Address,
+  orderId: Hex,
+): OutputFilledCacheEntry {
+  const addr = outputSettlerAddress.toLowerCase();
+  const t0 = OUTPUT_FILLED_TOPIC0.toLowerCase();
+  const t1 = orderId.toLowerCase();
+  for (const log of receiptLogs) {
+    if (
+      log.address.toLowerCase() === addr &&
+      log.topics[0]?.toLowerCase() === t0 &&
+      log.topics[1]?.toLowerCase() === t1
+    ) {
+      return {
+        blockNumber: log.blockNumber?.toString() ?? null,
+        transactionHash: log.transactionHash ?? null,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Scan the Hyperlane Mailbox for the DispatchId of the PostFill transaction.
+ *
+ * Background:
+ *   OutputSettlerSimple.fill() does NOT emit any Hyperlane event.
+ *   The solver submits a separate PostFill tx AFTER the fill, calling the
+ *   output oracle → Mailbox.dispatch() → emits Dispatch + DispatchId.
+ *
+ * Strategy (dual-pass, handles multiple Hyperlane ABI versions):
+ *   Pass 1 – v3 Dispatch with sender filter (precise, avoids false positives):
+ *     event Dispatch(address indexed sender, uint32 indexed destination,
+ *                    bytes32 indexed recipient, bytes32 messageId, bytes message)
+ *     Filter by sender = outputOracleAddress.  messageId is in event data.
+ *
+ *   Pass 2 – DispatchId fallback (consistent across Hyperlane v2 and v3):
+ *     event DispatchId(bytes32 indexed messageId)
+ *     No sender filter; returns the first DispatchId found in the scan window.
+ *     Less precise but always correct in single-order test environments.
+ *
+ * EVM chains store only bytecode, so the ABI cannot be fetched from the chain.
+ * The dual-pass approach makes this function robust without external ABI services.
+ */
+async function findMailboxDispatchIdAfterFill(
+  publicClient: any,
+  mailboxAddress: Address,
+  outputOracleAddress: Address | undefined,
+  fillBlock: bigint,
+): Promise<Hex | null> {
+  const latest = await publicClient.getBlockNumber();
+  const toBlock =
+    latest < fillBlock + HYPERLANE_POST_FILL_SCAN_BLOCKS
+      ? latest
+      : fillBlock + HYPERLANE_POST_FILL_SCAN_BLOCKS;
+
+  // Pass 1: v3 Dispatch with sender filter (precise)
+  if (outputOracleAddress) {
+    try {
+      const logs = await publicClient.getLogs({
+        address: mailboxAddress,
+        event: HYPERLANE_MAILBOX_DISPATCH_ABI,
+        args: { sender: outputOracleAddress },
+        fromBlock: fillBlock,
+        toBlock,
+      });
+      if (logs.length > 0) {
+        return (logs[0].args.messageId ?? null) as Hex | null;
+      }
+    } catch {
+      // Dispatch ABI may not match this Mailbox version; fall through to pass 2.
+    }
+  }
+
+  // Pass 2: DispatchId fallback (works with all Hyperlane versions)
+  try {
+    const idLogs = await publicClient.getLogs({
+      address: mailboxAddress,
+      event: HYPERLANE_MAILBOX_EVENTS_ABI[0], // DispatchId(bytes32 indexed messageId)
+      fromBlock: fillBlock,
+      toBlock,
+    });
+    if (idLogs.length > 0) {
+      return (idLogs[0].args.messageId ?? null) as Hex | null;
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+/** @deprecated Use findMailboxDispatchIdAfterFill instead. Kept for reference only. */
 async function findMailboxDispatchId(
   publicClient: any,
   mailboxAddress: Address,
