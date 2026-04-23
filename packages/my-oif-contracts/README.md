@@ -1,66 +1,127 @@
-## Foundry
+# my-oif-contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Foundry contract suite for the OIF (Open Intents Framework), with [CREATE2](https://github.com/Arachnid/deterministic-deployment-proxy) deployment scripts for reproducible cross-chain addresses on Ethereum Sepolia and Base Sepolia.
 
-Foundry consists of:
+## Prerequisites
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
-
-## Documentation
-
-https://book.getfoundry.sh/
-
-## Usage
-
-### Build
-
-```shell
-$ forge build
+```bash
+brew install foundry jq
 ```
 
-### Test
+## Setup
 
-```shell
-$ forge test
+```bash
+cd packages/my-oif-contracts
+cp .env.example .env
+# fill in values — see table below
 ```
 
-### Format
+## `.env` Variables
 
-```shell
-$ forge fmt
+| Variable            | Required       | Purpose                                                                                   | Where to get                                                                                    |
+| ------------------- | -------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `PRIVATE_KEY`       | Yes            | Deployer EOA used by `forge script --broadcast`                                           | Export from a wallet you control                                                                |
+| `ALCHEMY_API_KEY`   | Yes            | Resolves chain labels (`eth-sepolia`, `base-sepolia`) to RPC URLs; interpolated in config | [dashboard.alchemy.com](https://dashboard.alchemy.com/)                                         |
+| `ETHERSCAN_API_KEY` | For `--verify` | Source-code verification on Etherscan / Basescan (same key works for both)                | [etherscan.io/apis](https://etherscan.io/apis) · [basescan.org/apis](https://basescan.org/apis) |
+| `SALT`              | Yes            | Shared `bytes32` CREATE2 salt; keep it fixed across chains for same-address deploys       | Any 32-byte hex constant, e.g. `0x000…0`                                                        |
+
+> Do not commit `.env`.
+
+## Deploy Commands
+
+Scripts live in `script/deploy/universal/`. They accept an Alchemy chain label (`eth-sepolia`, `base-sepolia`) **or** a full RPC URL.
+
+---
+
+### `deploy-one-chain.sh` — Deploy contracts on one chain
+
+| Parameter      | Required         | Notes                                                  |
+| -------------- | ---------------- | ------------------------------------------------------ |
+| `<chain>`      | **Yes**          | Chain label or full RPC URL                            |
+| `--verify`     | No · recommended | Verify source on the block explorer right after deploy |
+| `--only <key>` | No               | Deploy only the named contract (see valid keys below)  |
+
+```bash
+# Deploy all contracts
+bash ./script/deploy/universal/deploy-one-chain.sh eth-sepolia
+bash ./script/deploy/universal/deploy-one-chain.sh base-sepolia
+
+# Deploy and verify in one step
+bash ./script/deploy/universal/deploy-one-chain.sh eth-sepolia --verify
+bash ./script/deploy/universal/deploy-one-chain.sh base-sepolia --verify
+
+# Deploy a single contract only
+bash ./script/deploy/universal/deploy-one-chain.sh eth-sepolia --only hyperlaneOracle --verify
+
+# Use a public RPC instead of an Alchemy label
+bash ./script/deploy/universal/deploy-one-chain.sh https://ethereum-sepolia-rpc.publicnode.com
 ```
 
-### Gas Snapshots
+**Sample output**
 
-```shell
-$ forge snapshot
+```
+[deploy] eth-sepolia
+  inputSettlerEscrow   → 0x8429Ba43...030c12c1  (new)
+  outputSettlerSimple  → 0x07C26291...Cfb90Eb  (new)
+  hyperlaneOracle      → 0x0BeC1724...feD2574  (new)
+addresses.json updated.
 ```
 
-### Anvil
+---
 
-```shell
-$ anvil
+### `dry-run.sh` — Simulate on a local Anvil fork (no broadcast)
+
+Writes `addresses.dry-run.json`. Picks a free local port automatically.
+
+| Parameter      | Required | Notes                            |
+| -------------- | -------- | -------------------------------- |
+| `<chain>`      | **Yes**  | Chain label or full RPC URL      |
+| `--only <key>` | No       | Simulate only the named contract |
+
+```bash
+bash ./script/deploy/universal/dry-run.sh eth-sepolia
+bash ./script/deploy/universal/dry-run.sh base-sepolia --only outputSettlerSimple
 ```
 
-### Deploy
+---
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+### `verify-one-chain.sh` — Re-verify already-deployed contracts
+
+| Parameter                 | Required | Notes                                                      |
+| ------------------------- | -------- | ---------------------------------------------------------- |
+| `<chain>`                 | **Yes**  | Chain label or full RPC URL                                |
+| `--only <key>`            | No       | Verify only the named contract                             |
+| `--soft-fail`             | No       | Exit 0 on verification failure (useful in CI chains)       |
+| `--addresses-path <path>` | No       | Use a different addresses file instead of `addresses.json` |
+
+```bash
+bash ./script/deploy/universal/verify-one-chain.sh eth-sepolia
+bash ./script/deploy/universal/verify-one-chain.sh eth-sepolia --only inputSettlerCompact
+bash ./script/deploy/universal/verify-one-chain.sh base-sepolia --soft-fail
 ```
 
-### Cast
+---
 
-```shell
-$ cast <subcommand>
-```
+### Valid `--only` keys
 
-### Help
+| Key                    | Contract                                                 |
+| ---------------------- | -------------------------------------------------------- |
+| `inputSettlerEscrow`   | `src/input/escrow/InputSettlerEscrow.sol`                |
+| `inputSettlerCompact`  | `src/input/compact/InputSettlerCompact.sol`              |
+| `outputSettlerSimple`  | `src/output/simple/OutputSettlerSimple.sol`              |
+| `hyperlaneOracle`      | `src/integrations/oracles/hyperlane/HyperlaneOracle.sol` |
+| `catsMulticallHandler` | `lib/cats-contracts/…`                                   |
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+## Cross-Chain Address Parity
+
+Contracts with no constructor args land on the **same address on every chain** as long as `SALT` stays fixed. Exceptions (args differ per chain):
+
+- `inputSettlerCompact` — takes a per-chain `compact` address
+- `hyperlaneOracle` — takes per-chain `mailbox`, `customHook`, and `ism`
+
+## References
+
+- Foundry Book: [book.getfoundry.sh](https://book.getfoundry.sh/)
+- Hyperlane Mailbox deployments: [docs.hyperlane.xyz/docs/reference/addresses/deployments/mailbox](https://docs.hyperlane.xyz/docs/reference/addresses/deployments/mailbox)
+- OIF contracts: [openintentsframework/oif-contracts](https://github.com/openintentsframework/oif-contracts)
+- Circle EURC/USDC testnet faucet: [faucet.circle.com](https://faucet.circle.com/)

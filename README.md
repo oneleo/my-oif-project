@@ -1,59 +1,42 @@
 # my-oif-project
 
-Monorepo managed with [moonrepo](https://moonrepo.dev/) for running the OIF solver and related contract workflows on test networks such as Ethereum Sepolia and Base Sepolia.
+Monorepo managed with [moonrepo](https://moonrepo.dev/) for running the OIF solver and related contract workflows on Ethereum Sepolia and Base Sepolia.
 
 ## Packages
 
-- `packages/my-oif-contracts/` — contract and deployment scripts
-- `packages/my-oif-solver/` — Rust solver wrapper, rendered JSON config flow, and TypeScript tooling
+| Package                                                             | Purpose                                                                                                                              |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| [`packages/my-oif-contracts/`](packages/my-oif-contracts/README.md) | Foundry contract suite and CREATE2 deployment scripts for OIF input/output settlers and Hyperlane oracles                            |
+| [`packages/my-oif-solver/`](packages/my-oif-solver/README.md)       | Rust OIF solver binary wrapper, JSON config rendering, and TypeScript CLI for quotes, `open`, `openFor`, refunds, and order tracking |
 
-See the package-level guide for solver usage:
+## Moon Tasks (no `.env` required)
 
-- [`packages/my-oif-solver/README.md`](packages/my-oif-solver/README.md)
+These tasks work without any `.env` configuration and are useful for CI or a fresh clone.
 
-## Requirements
-
-- Moon
-- Rust and Cargo
-- Node.js and npm
-- Redis
-- `jq`
-
-Copy and fill each package `.env.example` as needed. Do not commit `.env`.
-
-## Common Tasks
-
-From the monorepo root:
+### `my-oif-contracts` — Contract build and tests (requires Foundry)
 
 ```bash
-cd my-oif-project
-moon run my-oif-contracts:deploy-one-chain -- eth-sepolia
-moon run my-oif-contracts:dry-run -- eth-sepolia
-moon run my-oif-contracts:verify-one-chain -- eth-sepolia
+moon run my-oif-contracts:build      # forge build
+moon run my-oif-contracts:test       # forge test
 ```
 
-Additional solver tasks:
+### `my-oif-solver` — Build and quality checks (requires Rust)
 
 ```bash
-moon run my-oif-solver:npm-install
-moon run my-oif-solver:bootstrap
-moon run my-oif-solver:start
-
-moon run my-oif-solver:build
-moon run my-oif-solver:test
-moon run my-oif-solver:clippy
-moon run my-oif-solver:fmt-check
+moon run my-oif-solver:npm-install   # install Node.js dependencies
+moon run my-oif-solver:build         # compile the Rust solver binary
+moon run my-oif-solver:test          # run Rust unit tests
+moon run my-oif-solver:clippy        # Rust lint (Clippy)
+moon run my-oif-solver:fmt-check     # check Rust formatting
 ```
 
 ## Notes
 
-- `my-oif-solver` now renders JSON config placeholders such as `${ALCHEMY_API_KEY}` into a temporary file before running the solver.
-- The same wrapper is used for both `bootstrap` and `start`.
-- The project-level solver flow uses escrow only. The Compact route is not used by the project CLI or default config.
-- If you prefer to work inside the package directory, equivalent `npm run ...` commands are documented in `packages/my-oif-solver/README.md`.
-- `my-oif-contracts` deploy tasks are thin Moon wrappers over the scripts in `packages/my-oif-contracts/script/deploy/universal/`.
+- Tasks that require secrets (solver start, bootstrap, contract deploy, verify) are documented in each package's own README.
+- `my-oif-solver` renders JSON config placeholders such as `${ALCHEMY_API_KEY}` into a temporary file before starting the solver binary.
+- The project uses the **escrow** settlement path only; the Compact route is not used by this project's config or CLI.
 
 ## References
 
-- Moonrepo docs: [https://moonrepo.dev/docs](https://moonrepo.dev/docs)
+- Moonrepo docs: [moonrepo.dev/docs](https://moonrepo.dev/docs)
 - Upstream solver: [openintentsframework/oif-solver](https://github.com/openintentsframework/oif-solver)
