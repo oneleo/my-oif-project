@@ -7,6 +7,59 @@ PROD_ADDRESSES_PATH="./script/deploy/addresses.json"
 DRYRUN_ADDRESSES_PATH="./script/deploy/addresses.dry-run.json"
 CREATE2_FACTORY="0x4e59b44847b379578588920cA78FbF26c0B4956C"
 
+is_hyperliquid_chain() {
+	local chain_id="${1:?chain id required}"
+	[[ "$chain_id" == "998" || "$chain_id" == "999" ]]
+}
+
+foundry_profile_setting() {
+	local profile="${1:?profile required}"
+	local key="${2:?key required}"
+	local toml_path="$UNIVERSAL_REPO_ROOT/foundry.toml"
+	[[ -f "$toml_path" ]] || return 1
+
+	awk -v section="[profile.${profile}]" -v target_key="$key" '
+		BEGIN { in_section = 0 }
+		{
+			line = $0
+			sub(/[[:space:]]*#.*/, "", line)
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+			if (line ~ /^[[:space:]]*\[/) {
+				in_section = (line == section)
+			}
+			if (!in_section) next
+			if (line ~ ("^[[:space:]]*" target_key "[[:space:]]*=")) {
+				sub(/^[[:space:]]*[^=]+=[[:space:]]*/, "", line)
+				gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+				print line
+				exit
+			}
+		}
+	' "$toml_path"
+}
+
+ensure_foundry_profile_exists() {
+	local profile="${1:?profile required}"
+	local toml_path="$UNIVERSAL_REPO_ROOT/foundry.toml"
+	[[ -f "$toml_path" ]] || {
+		echo "error: missing foundry.toml at $toml_path" >&2
+		exit 1
+	}
+
+	awk -v section="[profile.${profile}]" '
+		{
+			line = $0
+			sub(/[[:space:]]*#.*/, "", line)
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+			if (line == section) found = 1
+		}
+		END { exit(found ? 0 : 1) }
+	' "$toml_path" || {
+		echo "error: [profile.${profile}] is missing in foundry.toml" >&2
+		exit 1
+	}
+}
+
 configure_deploy_addresses_paths() {
 	case "${1:?mode: production|dry-run|verify}" in
 	production)

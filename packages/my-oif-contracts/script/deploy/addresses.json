@@ -30,5 +30,21 @@
     "outputSettlerSimple": "0x07C262912467800B0AA9B2E1bd44DC8ceCfB90Eb",
     "hyperlaneOracle": "0x58Ce84331d53268430586dB120c0463859fd02Fc",
     "catsMulticallHandler": "0xE3a890f17B74ff8c270b66483d73D512Cc05FB9d"
+  },
+  "97": {
+    "chainLabel": "bnb-testnet",
+    "inputSettlerEscrow": "0x8429Ba4323b2131aA7FB1947E20dB479030c12c1",
+    "inputSettlerCompact": "0xe855e254813B2A2B974F9d888a5F8F8bCEb62aD5",
+    "outputSettlerSimple": "0x07C262912467800B0AA9B2E1bd44DC8ceCfB90Eb",
+    "hyperlaneOracle": "0xc972036D931f2090373AF33f030968f25400E6fE",
+    "catsMulticallHandler": "0xE3a890f17B74ff8c270b66483d73D512Cc05FB9d"
+  },
+  "998": {
+    "chainLabel": "hyperliquid-testnet",
+    "inputSettlerEscrow": "0xA8Af9f6b1649a8bF91bedAb479C426A0e5ADE8f5",
+    "inputSettlerCompact": "0x87C2e758F5eFD33C61080909389DD8D67a6Af223",
+    "outputSettlerSimple": "0x3b3e98f74129198bF2B430b1616297aD6E8DFd6d",
+    "hyperlaneOracle": "0x49Dc0F6fb9804573e5Dd85687b45eb698940beFb",
+    "catsMulticallHandler": "0x63305F65471a4B317130a8383684B37D52Ff10e2"
   }
 }

@@ -1,6 +1,7 @@
 # Compiler files
 cache/
 out/
+out-size/
 
 # Foundry broadcast artifacts
 /broadcast/

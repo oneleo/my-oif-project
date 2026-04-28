@@ -10,3 +10,20 @@ script = "script"
 fs_permissions = [
     { access = "read-write", path = "./script/deploy" }
 ]
+
+# ── 針對低 gas limit 鏈（如 Hyperliquid 3M）的 size-optimized profile ──────
+# 用法：FOUNDRY_PROFILE=size forge script ...
+# 或在 deploy-one-chain.sh 加入 --extra-args "--profile size"
+# 參考：https://book.getfoundry.sh/reference/config/compiler#optimizer
+[profile.size]
+solc = '0.8.30'
+src = "src"
+out = "out-size"
+libs = ["lib"]
+script = "script"
+optimizer = true
+optimizer_runs = 1        # runs=1 最大化 size 優化（犧牲執行效率）
+via_ir = true             # Yul IR 編譯路徑，通常可額外縮減 10-20%
+fs_permissions = [
+    { access = "read-write", path = "./script/deploy" }
+]

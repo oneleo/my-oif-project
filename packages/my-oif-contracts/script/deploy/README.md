@@ -116,6 +116,56 @@ Flags:
 
 - `--verify` — verify on the explorer right after deploy
 - `--only <contractKey>` — deploy only the specified contract
+- `--profile <foundry_profile>` — override the Foundry compilation profile (see `foundry.toml`)
+- `--gas-estimate-multiplier <int>` — override Forge's gas estimate multiplier (default `130`)
+- `--legacy` — use legacy tx mode (auto-enabled on Hyperliquid 998/999)
+
+#### Chains with low block gas limit (e.g. Hyperliquid)
+
+Hyperliquid testnet (`chainId=998`) and mainnet (`chainId=999`) enforce a **3 M gas block limit**. The deploy wrappers now apply a conservative policy automatically:
+
+- `--profile size` is enforced on chain `998/999`
+- `--gas-estimate-multiplier 100` is enforced on chain `998/999`
+- `--legacy` is enforced on chain `998/999` (avoids EIP-1559 fee estimation issues on some RPCs)
+- wrappers print detected `foundry.toml` `profile.size` values (`optimizer_runs`, `via_ir`) for audit visibility
+
+These defaults are chain-scoped. Other chains keep default profile + default multiplier unless you override them manually.
+
+Background:
+
+| Issue                     | Cause                                                                           | Fix                      |
+| ------------------------- | ------------------------------------------------------------------------------- | ------------------------ |
+| Bytecode too large        | Unoptimised deployed bytecode ≥ 15 KB → code deposit > 3 M gas                  | Enforce `--profile size` |
+| Forge estimate multiplier | Forge multiplies `eth_estimateGas` by 1.3× → `tx.gas_limit` exceeds block limit | Enforce multiplier `100` |
+
+With `--profile size`, `eth_estimateGas` for the largest contract (`inputSettlerEscrow`) is around ~2.49 M gas. Forge's default 1.3× multiplier pushes the submitted `tx.gas_limit` above 3 M, which the RPC rejects before execution. Setting `--gas-estimate-multiplier 100` keeps the submitted gas under block limit while preserving dynamic estimation.
+
+```sh
+# Hyperliquid testnet — dry-run (auto-applies profile=size + multiplier=100)
+bash ./script/deploy/universal/dry-run.sh https://rpc.hyperliquid-testnet.xyz/evm
+
+# Hyperliquid testnet — broadcast (same auto policy)
+bash ./script/deploy/universal/deploy-one-chain.sh https://rpc.hyperliquid-testnet.xyz/evm
+
+# Hyperliquid mainnet — broadcast (same auto policy)
+bash ./script/deploy/universal/deploy-one-chain.sh https://rpc.hyperliquid.xyz/evm
+
+# Optional explicit form (equivalent on Hyperliquid)
+bash ./script/deploy/universal/deploy-one-chain.sh \
+  https://rpc.hyperliquid.xyz/evm --profile size --gas-estimate-multiplier 100 --legacy
+```
+
+Bytecode sizes with the `size` profile:
+
+| Contract               | Default | `size` profile | `eth_estimateGas` | Forge 1.3× | Deployable with recommendation        |
+| ---------------------- | ------- | -------------- | ----------------- | ---------- | ------------------------------------- |
+| `inputSettlerEscrow`   | 19.6 KB | **10.2 KB**    | ~2.49 M           | ~3.23 M ❌ | ✅ w/ `--gas-estimate-multiplier 100` |
+| `inputSettlerCompact`  | 15.9 KB | **8.2 KB**     | < 2.49 M          | < 3 M ✅   | ✅                                    |
+| `outputSettlerSimple`  | 9.0 KB  | 3.6 KB         | < 2 M             | < 3 M ✅   | ✅                                    |
+| `hyperlaneOracle`      | 6.8 KB  | —              | < 2 M             | < 3 M ✅   | ✅                                    |
+| `catsMulticallHandler` | 6.4 KB  | —              | < 2 M             | < 3 M ✅   | ✅                                    |
+
+> ⚠️ **Address parity warning** — CREATE2 addresses are derived from `keccak256(init_code)`. The `size` profile produces different bytecode, so **all contract addresses on Hyperliquid will differ from those on other chains** (eth-sepolia, base-sepolia, …). This is an intentional trade-off: cross-chain address parity is sacrificed to work within Hyperliquid's gas limit. Never use `--profile size` on a chain that should share addresses with other deployments.
 
 ### Dry-run on a local Anvil fork
 
@@ -131,7 +181,10 @@ bash ./script/deploy/universal/dry-run.sh eth-sepolia --only outputSettlerSimple
 ```sh
 bash ./script/deploy/universal/verify-one-chain.sh eth-sepolia
 bash ./script/deploy/universal/verify-one-chain.sh eth-sepolia --only inputSettlerCompact
+bash ./script/deploy/universal/verify-one-chain.sh hyperliquid-testnet  # auto-uses FOUNDRY_PROFILE=size
 ```
+
+> Hyperliquid verify will also print a warning that CREATE2 addresses can differ from non-Hyperliquid chains.
 
 Flags:
 

@@ -31,6 +31,18 @@ cp .env.example .env
 
 Scripts live in `script/deploy/universal/`. They accept an Alchemy chain label (`eth-sepolia`, `base-sepolia`) **or** a full RPC URL.
 
+### Hyperliquid (chainId 998/999) Policy
+
+For Hyperliquid testnet/mainnet, deploy wrappers apply chain-specific defaults automatically:
+
+- enforce `profile=size`
+- enforce `gas-estimate-multiplier=100`
+- enforce legacy tx mode (`--legacy`) to avoid EIP-1559 fee estimation RPC edge cases
+- auto-detect and print current `foundry.toml` `profile.size` settings (e.g. `optimizer_runs`, `via_ir`)
+- keep this policy isolated to `998/999` only; other chains stay on default profile/settings
+
+This means Hyperliquid deployments intentionally produce different CREATE2 addresses from non-Hyperliquid chains.
+
 ---
 
 ### `deploy-one-chain.sh` — Deploy contracts on one chain
@@ -46,9 +58,14 @@ Scripts live in `script/deploy/universal/`. They accept an Alchemy chain label (
 bash ./script/deploy/universal/deploy-one-chain.sh eth-sepolia
 bash ./script/deploy/universal/deploy-one-chain.sh base-sepolia
 
+# Hyperliquid (legacy tx is auto-enabled; explicit --legacy is also accepted)
+bash ./script/deploy/universal/deploy-one-chain.sh hyperliquid-testnet
+bash ./script/deploy/universal/deploy-one-chain.sh hyperliquid-testnet --legacy
+
 # Deploy and verify in one step
 bash ./script/deploy/universal/deploy-one-chain.sh eth-sepolia --verify
 bash ./script/deploy/universal/deploy-one-chain.sh base-sepolia --verify
+bash ./script/deploy/universal/deploy-one-chain.sh hyperliquid-testnet --verify --legacy
 
 # Deploy a single contract only
 bash ./script/deploy/universal/deploy-one-chain.sh eth-sepolia --only hyperlaneOracle --verify

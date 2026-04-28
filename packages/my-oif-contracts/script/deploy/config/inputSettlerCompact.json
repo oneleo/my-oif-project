@@ -3,9 +3,17 @@
     "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
     "chainLabel": "eth-mainnet"
   },
+  "97": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "bnb-testnet"
+  },
   "130": {
     "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
     "chainLabel": "unichain-mainnet"
+  },
+  "998": {
+    "compact": "0x00000000000000171ede64904551eeDF3C6C9788",
+    "chainLabel": "hyperliquid-testnet"
   },
   "8453": {
     "compact": "0x00000000000000171ede64904551eeDF3C6C9788",

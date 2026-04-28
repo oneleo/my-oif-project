@@ -47,6 +47,23 @@ CHAIN_ID="$(cast chain-id --rpc-url "$RPC_URL")"
 
 ensure_chain_entry "$DEPLOY_ADDRESSES_PATH" "$CHAIN_ID"
 
+if is_hyperliquid_chain "$CHAIN_ID"; then
+	# Hyperliquid 的部署使用 size profile（不同 bytecode / metadata）。
+	# verify 階段也必須使用同 profile 才能避免編譯設定不一致。
+	ensure_foundry_profile_exists "size"
+	if [[ -n "${FOUNDRY_PROFILE:-}" && "${FOUNDRY_PROFILE}" != "size" ]]; then
+		echo "error: Hyperliquid verification requires FOUNDRY_PROFILE=size (chainId=$CHAIN_ID)" >&2
+		exit 1
+	fi
+	export FOUNDRY_PROFILE="size"
+	echo "Hyperliquid verify defaults applied: FOUNDRY_PROFILE=size (chainId=$CHAIN_ID)"
+	echo "warning: Hyperliquid addresses may differ from non-Hyperliquid chains due to profile=size CREATE2 init_code differences"
+	size_optimizer_runs="$(foundry_profile_setting "size" "optimizer_runs" || true)"
+	size_via_ir="$(foundry_profile_setting "size" "via_ir" || true)"
+	[[ -n "$size_optimizer_runs" ]] && echo "Hyperliquid detected foundry.toml -> profile.size.optimizer_runs=$size_optimizer_runs"
+	[[ -n "$size_via_ir" ]] && echo "Hyperliquid detected foundry.toml -> profile.size.via_ir=$size_via_ir"
+fi
+
 mapfile -t TARGET_KEYS < <(emit_target_keys "$ONLY_KEY")
 
 OK=0
