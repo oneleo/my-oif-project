@@ -61,7 +61,13 @@ npm run tron-address -- --hex 41A614F803B6FD780986A42C78EC9C7F77E6DED13C
   預設為 `0x0`，正式跑 PostFill 前請覆蓋。
 - `account.implementations.local_tron_shasta` 會使用
   `SOLVER_PRIVATE_KEY_TRON_SHASTA`，供 `tron_native` 的 per-network signer 使用。
-- `TRON_CHAIN_IDS` 建議固定為 `2494104990`，可避免自動判斷時混入非 Tron 鏈。
+- `TRON_CHAIN_IDS` 建議固定為 `2494104990`，可避免自動判斷時混入非 Tron 鏈；
+  若用 `config/tron_hyperevm-testnet.json` 啟動且未設定，`run-solver.sh` 會自動補預設值。
+- `settlement.hyperlane` 新增 delivery 監控參數，可控制跨鏈事件追蹤穩定性：
+  - `delivery_check_timeout_ms`
+  - `delivery_retry_max_retries`
+  - `delivery_retry_initial_backoff_ms`
+  - `delivery_retry_max_backoff_ms`
 - `npm run smoke-tron-to-hyperevm` 會驗證：
   - `/assets` 是否同時出現 `USDT@TRON` 與 `USDC@HyperEVM`
   - `tron_base58` 欄位是否存在於 Tron token 回應

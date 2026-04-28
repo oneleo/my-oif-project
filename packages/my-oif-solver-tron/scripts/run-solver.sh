@@ -51,6 +51,12 @@ if [ -f "$env_file_path" ]; then
   set +a
 fi
 
+config_basename="$(basename "$config_input")"
+if [ "$config_basename" = "tron_hyperevm-testnet.json" ] && [ -z "${TRON_CHAIN_IDS:-}" ]; then
+  # Keep Tron delivery split deterministic for the dedicated Tron/HyperEVM preset.
+  export TRON_CHAIN_IDS=2494104990
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
   if [ -x "$HOME/.cargo/bin/cargo" ]; then
     PATH="$HOME/.cargo/bin:$PATH"
