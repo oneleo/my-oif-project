@@ -1,0 +1,49 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+layer: "application"
+language: "rust"
+
+tasks:
+  npm-install:
+    command: npm
+    args:
+      - ci
+    inputs:
+      - "package.json"
+      - "package-lock.json"
+
+  ts-check:
+    command: npx
+    args:
+      - tsc
+      - --noEmit
+    inputs:
+      - "tsconfig.json"
+      - "scripts/index.ts"
+      - "scripts/index.test.ts"
+      - "package.json"
+      - "package-lock.json"
+
+  script-health:
+    script: "set -a && source .env && set +a && npm run health"
+    inputs:
+      - ".env.example"
+      - "package.json"
+      - "scripts/index.ts"
+      - "scripts/index.test.ts"
+
+  bootstrap:
+    script: "bash scripts/run-solver.sh config/tron_hyperevm-testnet.json --force-seed"
+    inputs:
+      - ".env.example"
+      - "config/tron_hyperevm-testnet.json"
+      - "scripts/run-solver.sh"
+      - "scripts/render-config-env.sh"
+    preset: server
+
+  start:
+    script: "bash scripts/run-solver.sh config/tron_hyperevm-testnet.json"
+    inputs:
+      - ".env.example"
+      - "config/tron_hyperevm-testnet.json"
+      - "scripts/run-solver.sh"
+      - "scripts/render-config-env.sh"

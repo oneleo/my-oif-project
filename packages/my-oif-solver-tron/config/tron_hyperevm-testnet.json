@@ -1,0 +1,95 @@
+{
+  "solver_id": "tron-shasta-hyperevm-testnet",
+  "solver_name": "OIF Tron Shasta <-> HyperEVM Testnet",
+  "networks": [
+    {
+      "chain_id": 2494104990,
+      "name": "Tron Shasta Testnet",
+      "type": "parent",
+      "rpc_urls": ["${TRON_SHASTA_RPC_URL}"],
+      "input_settler_address": "0x16f1c40c13634f4a97d8004453ed86b7189583bc",
+      "output_settler_address": "0x3274dd713c02aaf9cbbba913733177d9a40c0a03",
+      "tokens": [
+        {
+          "symbol": "USDT",
+          "name": "Tether USD",
+          "address": "0x42A1E39AEFA49290F2B3F9ED688D7CECF86CD6E0",
+          "decimals": 6
+        }
+      ]
+    },
+    {
+      "chain_id": 998,
+      "name": "HyperEVM Testnet",
+      "type": "hub",
+      "rpc_urls": ["${HYPEREVM_TESTNET_RPC_URL}"],
+      "input_settler_address": "0x0000000000000000000000000000000000000000",
+      "output_settler_address": "0xe241df14e36c639610e6f564a74b0bc9350dbc60",
+      "tokens": [
+        {
+          "symbol": "USDC",
+          "name": "USD Coin",
+          "address": "0x2B3370eE501B4a559b57D449569354196457D8Ab",
+          "decimals": 6
+        }
+      ]
+    }
+  ],
+  "settlement": {
+    "type": "hyperlane",
+    "hyperlane": {
+      "default_gas_limit": 500000,
+      "message_timeout_seconds": 600,
+      "finalization_required": true,
+      "intent_min_expiry_seconds": 300,
+      "mailboxes": {
+        "2494104990": "0xB50E9F9CB52543D754768dD67f1e6148ABd78B0B",
+        "998": "0x589C201a07c26b4725A4A829d772f24423da480B"
+      },
+      "igp_addresses": {
+        "2494104990": "${TRON_HYPERLANE_IGP_ADDRESS:-0x0000000000000000000000000000000000000000}",
+        "998": "${HYPEREVM_HYPERLANE_IGP_ADDRESS:-0x0000000000000000000000000000000000000000}"
+      },
+      "oracles": {
+        "input": {
+          "2494104990": [
+            "${TRON_INPUT_ORACLE_ADDRESS:-0x2136957a89d3552e260b8dd4134c2c66d37db044}"
+          ],
+          "998": ["0xbAe9c270727bD11Bf1b7F358526B1bf6c463ff28"]
+        },
+        "output": {
+          "2494104990": [
+            "${TRON_OUTPUT_ORACLE_ADDRESS:-0x2136957a89d3552e260b8dd4134c2c66d37db044}"
+          ],
+          "998": ["0xbAe9c270727bD11Bf1b7F358526B1bf6c463ff28"]
+        }
+      },
+      "routes": {
+        "2494104990": [998],
+        "998": [2494104990]
+      }
+    }
+  },
+  "min_profitability_pct": "-100.0",
+  "gas_buffer_bps": 1500,
+  "commission_bps": 0,
+  "rate_buffer_bps": 0,
+  "monitoring_timeout_seconds": 864000,
+  "auth_enabled": false,
+  "account": {
+    "primary": "local",
+    "implementations": {
+      "local": {
+        "private_key": "${SOLVER_PRIVATE_KEY}"
+      },
+      "local_tron_shasta": {
+        "private_key": "${SOLVER_PRIVATE_KEY_TRON_SHASTA}"
+      }
+    }
+  },
+  "admin": {
+    "enabled": true,
+    "domain": "localhost",
+    "admin_addresses": ["0xE97B63899E72efbe9aB3f08967Dee4EDF1Eb4270"]
+  }
+}

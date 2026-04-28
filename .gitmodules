@@ -7,3 +7,6 @@
 [submodule "packages/my-oif-solver/lib/oif-solver"]
 	path = packages/my-oif-solver/lib/oif-solver
 	url = https://github.com/oneleo/oif-solver.git
+[submodule "packages/my-oif-solver-tron/lib/oif-solver"]
+	path = packages/my-oif-solver-tron/lib/oif-solver
+	url = https://github.com/oneleo/oif-solver.git

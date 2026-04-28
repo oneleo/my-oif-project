@@ -1,0 +1,29 @@
+{
+  "name": "my-oif-solver-tron",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OIF solver wrapper for Tron Shasta <-> HyperEVM testnet",
+  "type": "module",
+  "scripts": {
+    "bootstrap": "bash scripts/run-solver.sh config/tron_hyperevm-testnet.json --force-seed",
+    "start": "bash scripts/run-solver.sh config/tron_hyperevm-testnet.json",
+    "render-config": "bash scripts/render-config-env.sh",
+    "health": "tsx scripts/index.ts health",
+    "assets": "tsx scripts/index.ts assets",
+    "rpc-probe": "tsx scripts/index.ts rpc-probe",
+    "tron-address": "tsx scripts/index.ts tron-address",
+    "smoke-tron-to-hyperevm": "tsx scripts/index.ts smoke-tron-to-hyperevm",
+    "test": "node --import tsx --test scripts/*.test.ts"
+  },
+  "dependencies": {
+    "@wonderland/interop-addresses": "^0.5.1",
+    "dotenv": "^17.4.2",
+    "dotenv-expand": "^12.0.3",
+    "viem": "^2.47.18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  }
+}
