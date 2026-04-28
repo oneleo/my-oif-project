@@ -3,6 +3,7 @@ import { expand } from "dotenv-expand";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { privateKeyToAccount } from "viem/accounts";
 
 expand(loadEnv({ path: join(process.cwd(), ".env") }));
 
@@ -17,11 +18,26 @@ const TRON_CHAIN_ID = Number(process.env.TRON_CHAIN_ID ?? "2494104990");
 const HYPEREVM_CHAIN_ID = Number(process.env.HYPEREVM_CHAIN_ID ?? "998");
 const TRON_USDT_ADDRESS =
   process.env.TRON_USDT_ADDRESS ?? "0x42A1E39AEFA49290F2B3F9ED688D7CECF86CD6E0";
+const HYPEREVM_USDC_ADDRESS =
+  process.env.HYPEREVM_USDC_ADDRESS ??
+  "0x2B3370eE501B4a559b57D449569354196457D8Ab";
 const TRON_INPUT_SETTLER_ADDRESS =
   process.env.TRON_INPUT_SETTLER_ADDRESS ??
   "0x16f1c40c13634f4a97d8004453ed86b7189583bc";
+const HYPEREVM_OUTPUT_SETTLER_ADDRESS =
+  process.env.HYPEREVM_OUTPUT_SETTLER_ADDRESS ??
+  "0xe241df14e36c639610e6f564a74b0bc9350dbc60";
 const SMOKE_OWNER_ADDRESS =
   process.env.SMOKE_OWNER_ADDRESS ?? process.env.TRON_TEST_OWNER_ADDRESS;
+const LIVE_INPUT_AMOUNT = process.env.LIVE_INPUT_AMOUNT ?? "1000000";
+const LIVE_POLL_INTERVAL_MS = Number(
+  process.env.LIVE_POLL_INTERVAL_MS ?? "5000",
+);
+const LIVE_TIMEOUT_MS = Number(process.env.LIVE_TIMEOUT_MS ?? "900000");
+const E2E_REQUIRE_STAGE1_LIVE =
+  (process.env.E2E_REQUIRE_STAGE1_LIVE ?? "true").toLowerCase() === "true";
+const E2E_ENABLE_STAGE2 =
+  (process.env.E2E_ENABLE_STAGE2 ?? "false").toLowerCase() === "true";
 
 const BASE58_ALPHABET =
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -49,6 +65,15 @@ async function main() {
     case "smoke-tron-to-hyperevm":
       await handleSmokeTronToHyperEvm();
       return;
+    case "smoke-hyperevm-to-tron":
+      await handleSmokeHyperEvmToTron();
+      return;
+    case "live-e2e-tron-to-hyperevm":
+      await handleLiveE2ETronToHyperEvm();
+      return;
+    case "e2e-staged-gates":
+      await handleE2EStagedGates();
+      return;
     default:
       printHelp();
   }
@@ -62,12 +87,16 @@ function printHelp() {
   npm run tron-address -- --base58 T...
   npm run tron-address -- --hex 41...
   npm run smoke-tron-to-hyperevm
+  npm run smoke-hyperevm-to-tron
+  npm run live-e2e-tron-to-hyperevm
+  npm run e2e-staged-gates
 
 Notes:
   - rpc-probe verifies "read via JSON-RPC" and reports if transaction
     broadcasting via eth_sendRawTransaction is unavailable on Shasta.
   - tron-address converts Base58Check <-> hex(41 prefix) <-> EVM(0x20-byte).
   - smoke-tron-to-hyperevm validates TRON -> HyperEVM prerequisites.
+  - live-e2e-tron-to-hyperevm runs /quotes -> /orders -> /orders/{id} tracking.
 `);
 }
 
@@ -233,6 +262,189 @@ async function handleSmokeTronToHyperEvm() {
               reason:
                 "未提供 SMOKE_OWNER_ADDRESS/TRON_TEST_OWNER_ADDRESS，略過 nonce/balance/allowance 檢查。",
             },
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+async function handleSmokeHyperEvmToTron() {
+  const assets = (await fetchJson(`${SOLVER_BASE_URL}/assets`)) as {
+    networks?: Record<
+      string,
+      {
+        chain_id: number;
+        assets: Array<{
+          symbol: string;
+          address: string;
+          tron_base58?: string;
+        }>;
+      }
+    >;
+  };
+  const tronNetwork = assets.networks?.[String(TRON_CHAIN_ID)];
+  const hyperNetwork = assets.networks?.[String(HYPEREVM_CHAIN_ID)];
+  if (!tronNetwork || !hyperNetwork) {
+    throw new Error(
+      `assets 缺少目標鏈設定，TRON=${TRON_CHAIN_ID} HyperEVM=${HYPEREVM_CHAIN_ID}`,
+    );
+  }
+  const tronUsdt = tronNetwork.assets.find((a) => a.symbol === "USDT");
+  const hyperUsdc = hyperNetwork.assets.find((a) => a.symbol === "USDC");
+  if (!tronUsdt || !hyperUsdc) {
+    throw new Error("assets 缺少 USDT@TRON 或 USDC@HyperEVM");
+  }
+  const tronChainIdResp = await jsonRpc(TRON_SHASTA_RPC_URL, "eth_chainId", []);
+  const hyperChainIdResp = await jsonRpc(
+    HYPEREVM_TESTNET_RPC_URL,
+    "eth_chainId",
+    [],
+  );
+  const actualTronChainId = Number.parseInt(
+    String((tronChainIdResp as { result?: string }).result ?? "0x0"),
+    16,
+  );
+  const actualHyperChainId = Number.parseInt(
+    String((hyperChainIdResp as { result?: string }).result ?? "0x0"),
+    16,
+  );
+  console.log(
+    JSON.stringify(
+      {
+        direction: "HyperEVM->TRON",
+        solver_assets_check: {
+          tron_chain_id: TRON_CHAIN_ID,
+          hyperevm_chain_id: HYPEREVM_CHAIN_ID,
+          tron_usdt: tronUsdt,
+          hyperevm_usdc: hyperUsdc,
+        },
+        rpc_chain_ids: {
+          tron_expected: TRON_CHAIN_ID,
+          tron_actual: actualTronChainId,
+          hyperevm_expected: HYPEREVM_CHAIN_ID,
+          hyperevm_actual: actualHyperChainId,
+        },
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+async function handleE2EStagedGates() {
+  const report: Record<string, unknown> = {
+    stage1: { direction: "TRON->HyperEVM", smoke: "pending", live: "pending" },
+    stage2: { direction: "HyperEVM->TRON", smoke: "skipped" },
+  };
+  await handleSmokeTronToHyperEvm();
+  (report.stage1 as Record<string, unknown>).smoke = "passed";
+  if (E2E_REQUIRE_STAGE1_LIVE) {
+    await handleLiveE2ETronToHyperEvm();
+    (report.stage1 as Record<string, unknown>).live = "passed";
+  } else {
+    (report.stage1 as Record<string, unknown>).live = "skipped";
+  }
+  if (E2E_ENABLE_STAGE2) {
+    await handleSmokeHyperEvmToTron();
+    (report.stage2 as Record<string, unknown>).smoke = "passed";
+  }
+  console.log(JSON.stringify({ staged_gates: report }, null, 2));
+}
+
+async function handleLiveE2ETronToHyperEvm() {
+  const userPrivateKey = process.env.USER_PRIVATE_KEY;
+  if (!userPrivateKey) {
+    throw new Error("缺少 USER_PRIVATE_KEY，無法進行 live e2e 簽章。");
+  }
+  const account = privateKeyToAccount(normalizePrivateKey(userPrivateKey));
+  const ownerEvm = normalizeToEvm20Hex(account.address);
+  const userInterop = toInteropAddress(TRON_CHAIN_ID, ownerEvm);
+  const receiverInterop = toInteropAddress(HYPEREVM_CHAIN_ID, ownerEvm);
+  const inputAssetInterop = toInteropAddress(
+    TRON_CHAIN_ID,
+    normalizeToEvm20Hex(TRON_USDT_ADDRESS),
+  );
+  const outputAssetInterop = toInteropAddress(
+    HYPEREVM_CHAIN_ID,
+    normalizeToEvm20Hex(HYPEREVM_USDC_ADDRESS),
+  );
+  const quoteRequest = {
+    user: userInterop,
+    intent: {
+      intentType: "oif-swap",
+      inputs: [
+        {
+          user: userInterop,
+          asset: inputAssetInterop,
+          amount: LIVE_INPUT_AMOUNT,
+        },
+      ],
+      outputs: [{ receiver: receiverInterop, asset: outputAssetInterop }],
+      swapType: "exact-input",
+      originSubmission: { mode: "user", schemes: ["permit2"] },
+    },
+    supportedTypes: ["oif-escrow-v0"],
+  };
+  const quoteResponse = (await postJson(
+    `${SOLVER_BASE_URL}/quotes`,
+    quoteRequest,
+  )) as {
+    quotes?: Array<{
+      quoteId?: string;
+      order?: {
+        payload?: {
+          domain?: Record<string, unknown>;
+          types?: Record<string, unknown>;
+          primaryType?: string;
+          message?: Record<string, unknown>;
+        };
+      };
+    }>;
+  };
+  const quote = quoteResponse.quotes?.[0];
+  const quoteId = quote?.quoteId;
+  if (!quoteId) {
+    throw new Error("quotes 回應缺少 quoteId，無法進行下單。");
+  }
+  const payload = quote.order?.payload;
+  if (
+    !payload?.types ||
+    !payload.primaryType ||
+    !payload.domain ||
+    !payload.message
+  ) {
+    throw new Error("quotes 回應缺少可簽章的 EIP-712 payload。");
+  }
+  const signature = (await (
+    account.signTypedData as unknown as (
+      input: Record<string, unknown>,
+    ) => Promise<string>
+  )({
+    domain: payload.domain,
+    types: payload.types,
+    primaryType: payload.primaryType,
+    message: payload.message,
+  })) as `0x${string}`;
+  const orderResp = (await postJson(`${SOLVER_BASE_URL}/orders`, {
+    quoteId,
+    signature,
+  })) as { orderId?: string; status?: string; message?: string | null };
+  const orderId = orderResp.orderId;
+  if (!orderId) {
+    throw new Error(
+      `orders 回應缺少 orderId，status=${String(orderResp.status ?? "unknown")} message=${String(orderResp.message ?? "")}`,
+    );
+  }
+  const tracking = await pollOrderTracking(orderId);
+  console.log(
+    JSON.stringify(
+      {
+        direction: "TRON->HyperEVM",
+        quote_id: quoteId,
+        order_id: orderId,
+        user_evm20: ownerEvm,
+        tracking,
       },
       null,
       2,
@@ -436,6 +648,92 @@ function normalizeToEvm20Hex(value: string): string {
     throw new Error(`地址長度不符 20 bytes: ${value}`);
   }
   return `0x${clean}`.toLowerCase();
+}
+
+export function normalizePrivateKey(value: string): `0x${string}` {
+  const clean = value.trim();
+  const withPrefix = clean.startsWith("0x") ? clean : `0x${clean}`;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(withPrefix)) {
+    throw new Error("USER_PRIVATE_KEY 格式錯誤，需為 64 hex chars。");
+  }
+  return withPrefix as `0x${string}`;
+}
+
+export function toInteropAddress(chainId: number, evm20Hex: string): string {
+  const addr = normalizeToEvm20Hex(evm20Hex).replace(/^0x/i, "").toLowerCase();
+  const chainHex = Number(chainId).toString(16);
+  const padded = chainHex.length % 2 === 0 ? chainHex : `0${chainHex}`;
+  const chainRef = padded.length === 0 ? "00" : padded;
+  const chainRefLen = (chainRef.length / 2).toString(16).padStart(2, "0");
+  return `0x00010000${chainRefLen}${chainRef}14${addr}`;
+}
+
+async function postJson(url: string, body: unknown): Promise<unknown> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `HTTP ${response.status} ${response.statusText}: ${text || url}`,
+    );
+  }
+  return text ? (JSON.parse(text) as unknown) : {};
+}
+
+async function pollOrderTracking(orderId: string): Promise<{
+  final_status: string;
+  attempts: number;
+  elapsed_ms: number;
+}> {
+  const start = Date.now();
+  let attempts = 0;
+  while (Date.now() - start < LIVE_TIMEOUT_MS) {
+    attempts += 1;
+    const orderResp = (await fetchJson(
+      `${SOLVER_BASE_URL}/orders/${orderId}`,
+    )) as {
+      order?: { status?: unknown };
+    };
+    const status = orderResp.order?.status;
+    const normalized = normalizeOrderStatus(status);
+    if (normalized === "failed") {
+      throw new Error(`order tracking 失敗：${JSON.stringify(status)}`);
+    }
+    if (
+      ["executed", "postfilled", "settled", "preclaimed", "finalized"].includes(
+        normalized,
+      )
+    ) {
+      return {
+        final_status: normalized,
+        attempts,
+        elapsed_ms: Date.now() - start,
+      };
+    }
+    await sleep(LIVE_POLL_INTERVAL_MS);
+  }
+  throw new Error(
+    `order tracking timeout: ${orderId} 超過 ${LIVE_TIMEOUT_MS}ms`,
+  );
+}
+
+export function normalizeOrderStatus(status: unknown): string {
+  if (typeof status === "string") {
+    return status.toLowerCase();
+  }
+  if (status && typeof status === "object") {
+    if ("failed" in (status as Record<string, unknown>)) {
+      return "failed";
+    }
+  }
+  return "unknown";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchJson(url: string): Promise<unknown> {

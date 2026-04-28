@@ -13,6 +13,9 @@
     "rpc-probe": "tsx scripts/index.ts rpc-probe",
     "tron-address": "tsx scripts/index.ts tron-address",
     "smoke-tron-to-hyperevm": "tsx scripts/index.ts smoke-tron-to-hyperevm",
+    "smoke-hyperevm-to-tron": "tsx scripts/index.ts smoke-hyperevm-to-tron",
+    "live-e2e-tron-to-hyperevm": "tsx scripts/index.ts live-e2e-tron-to-hyperevm",
+    "e2e-staged-gates": "tsx scripts/index.ts e2e-staged-gates",
     "test": "node --import tsx --test scripts/*.test.ts"
   },
   "dependencies": {

@@ -31,6 +31,30 @@ tasks:
       - "scripts/index.ts"
       - "scripts/index.test.ts"
 
+  smoke-tron-to-hyperevm:
+    script: "set -a && source .env && set +a && npm run smoke-tron-to-hyperevm"
+    inputs:
+      - ".env.example"
+      - "config/tron_hyperevm-testnet.json"
+      - "scripts/index.ts"
+      - "scripts/index.test.ts"
+
+  smoke-hyperevm-to-tron:
+    script: "set -a && source .env && set +a && npm run smoke-hyperevm-to-tron"
+    inputs:
+      - ".env.example"
+      - "config/tron_hyperevm-testnet.json"
+      - "scripts/index.ts"
+      - "scripts/index.test.ts"
+
+  e2e-staged-gates:
+    script: "set -a && source .env && set +a && npm run e2e-staged-gates"
+    inputs:
+      - ".env.example"
+      - "config/tron_hyperevm-testnet.json"
+      - "scripts/index.ts"
+      - "scripts/index.test.ts"
+
   bootstrap:
     script: "bash scripts/run-solver.sh config/tron_hyperevm-testnet.json --force-seed"
     inputs:

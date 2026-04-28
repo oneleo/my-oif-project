@@ -38,6 +38,8 @@ npm run start
 npm run health
 npm run assets
 npm run smoke-tron-to-hyperevm
+npm run smoke-hyperevm-to-tron
+npm run e2e-staged-gates
 ```
 
 ## Tron 位址工具
@@ -73,12 +75,38 @@ npm run tron-address -- --hex 41A614F803B6FD780986A42C78EC9C7F77E6DED13C
   - `tron_base58` 欄位是否存在於 Tron token 回應
   - 雙鏈 `eth_chainId` 是否與預期一致
   - 若有提供 `SMOKE_OWNER_ADDRESS`，額外驗證 Tron nonce / balance / allowance read path
+- `npm run smoke-hyperevm-to-tron` 會做反向路徑前置檢查（資產映射 + 雙鏈 chainId）
+- `npm run live-e2e-tron-to-hyperevm` 會執行：
+  - `POST /quotes`（TRON USDT -> HyperEVM USDC）
+  - 使用 `USER_PRIVATE_KEY` 進行 EIP-712 簽章
+  - `POST /orders`
+  - `GET /orders/{id}` 持續追蹤直到可接受狀態或超時
+- `npm run e2e-staged-gates` 會依環境變數執行分階段驗收：
+  - Stage 1（必跑）：`TRON -> HyperEVM` smoke，且可要求 live e2e
+  - Stage 2（可選）：`HyperEVM -> TRON` smoke（預設關閉）
 
 ## 注意事項
 
 - 目前 `oif-solver` 核心 delivery 仍是 EVM-only；Tron 寫交易要走原生 API。
 - 此 wrapper 先確保可啟動、可渲染配置、可做鏈相容探針與地址治理。
 - 後續核心改造建議在 `oif-solver-oneleo/` 進行，再回收 submodule 更新。
+
+## Live E2E 執行手冊（Step 8）
+
+1. 啟動 solver（建議先 `npm run bootstrap` 一次）。
+2. 在 `.env` 設定：
+   - `USER_PRIVATE_KEY`（測試錢包私鑰）
+   - `SMOKE_OWNER_ADDRESS`（可填 `T...` 或 `0x...`）
+   - `LIVE_INPUT_AMOUNT`（預設 `1000000`，即 1 USDT）
+3. 確認 `USER_PRIVATE_KEY` 對應地址有足夠 `TRX + USDT`。
+4. 執行：
+   - 單向 live：`npm run live-e2e-tron-to-hyperevm`
+   - 分階段驗收：`npm run e2e-staged-gates`
+
+建議 gate 參數：
+
+- `E2E_REQUIRE_STAGE1_LIVE=true`：Stage 1 必須跑 live e2e（建議 CI 關閉，手動驗收開啟）
+- `E2E_ENABLE_STAGE2=false`：先關閉反向驗收，等第二階段再開
 
 ## 參考
 
